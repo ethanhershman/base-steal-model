@@ -10,46 +10,43 @@ Two connected pieces (see [`ROADMAP.md`](ROADMAP.md) for the full design):
    success rate for that situation, and recommend a steal only when the
    predicted probability clears it.
 
-This repo already **works end to end on real 2023 MLB play-by-play.** It ships
-with one parsed season so you can run everything immediately, then scale up.
+This repo is currently focused on **step 1: getting clean, validated data.**
+It ships with one parsed season (2023) so you can run the parser immediately,
+then scale up to more seasons and join in Statcast skill data. The
+modeling and decision-layer pieces (see [`ROADMAP.md`](ROADMAP.md)) come
+after the data is trusted.
 
 ## Quick start
 
 ```bash
-pip install -r requirements.txt          # only needed for modeling / Statcast
+pip install -r requirements.txt          # only needed for Statcast / notebook
 
 # 1. Parse steal attempts from the bundled 2023 Retrosheet data
 python -m src.retrosheet_parser --data-dir data/retrosheet_2023 \
     --out data/sample/steals_2023.csv
 
-# 2. Build the run-expectancy table (the decision layer's backbone)
-python -m src.run_expectancy --data-dir data/retrosheet_2023 \
-    --out data/sample/re24_2023.csv
+# 2. (optional) Pull Statcast skill tables + build the Retrosheet<->MLBAM
+#    id crosswalk, needed to eventually join sprint speed / pop time on
+python -m src.statcast_pull --season 2023 --out data/statcast
+python -m src.id_crosswalk --out data/statcast/id_crosswalk.csv
 
-# 3. Engineer features (leakage-safe) and train a baseline model
-python -m src.features --steals data/sample/steals_2023.csv \
-    --out data/sample/features_2023.csv
-python -m src.train --features data/sample/features_2023.csv
-
-# 4. See the decision layer in action
-python -m src.demo_decision
-
-# Validate everything against known 2023 facts
+# Validate the parser against known 2023 facts
 python -m pytest tests/ -q
 ```
+
+See `notebooks/eda.ipynb` for exploratory checks on the parsed data
+(e.g. stolen-base leaderboard, success rates, base-state distribution).
 
 ## What's here
 
 | File | Purpose |
 |------|---------|
 | `src/retrosheet_parser.py` | Parses Retrosheet event files into one row per steal attempt, tracking base/out/score state. **Tested & validated.** |
-| `src/run_expectancy.py` | Builds the RE24 table and computes steal break-even rates. |
-| `src/features.py` | Leakage-safe feature engineering (prior runner/pitcher/catcher rates, situation). |
-| `src/train.py` | Baseline logistic-regression model with the right evaluation metrics. |
-| `src/demo_decision.py` | End-to-end steal / hold recommendations. |
 | `src/statcast_pull.py` | Pulls Statcast skill data (sprint speed, pop time) — **run on your own machine.** |
+| `src/id_crosswalk.py` | Builds the Retrosheet id <-> MLBAM id crosswalk (via Chadwick register) needed to join Statcast onto Retrosheet rows. |
 | `src/fetch_retrosheet.py` | Downloads more seasons from the Retrosheet GitHub mirror. |
-| `tests/` | Regression tests (leaderboard, success rate, RE24 anchors). |
+| `notebooks/eda.ipynb` | Exploratory checks on the parsed steal-attempt data. |
+| `tests/` | Regression tests (leaderboard, success rate). |
 | `data/retrosheet_2023/` | Bundled raw 2023 event + roster files. |
 | `data/sample/` | Generated sample outputs. |
 
@@ -71,7 +68,6 @@ The parser is checked against known 2023 facts (all pass):
 - Every steal attempt's runner is resolved (0 unresolved of 4,439).
 - League steal-success rate ≈ 80%.
 - SB leaderboard matches reality (Acuña Jr. #1 with 70+).
-- RE24 table matches textbook values (empty/0-out ≈ 0.51, loaded/0-out ≈ 2.23).
 
 ## Known limitations
 

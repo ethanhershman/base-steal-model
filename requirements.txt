@@ -1,10 +1,7 @@
-# Core parser, run-expectancy, and tests need only the standard library.
-# These are for the modeling + Statcast pieces you'll run on your own machine.
+# Core parser needs only the standard library.
+# These are for data pulls, validation, and the EDA notebook.
 pandas
-scikit-learn
-pybaseball        # Statcast/Retrosheet pulls (works off-sandbox)
+pybaseball        # Statcast pulls + Chadwick id crosswalk (works off-sandbox)
 pytest            # test suite
-# Optional, for the upgraded model (see ROADMAP.md):
-# xgboost
-# lightgbm
-# matplotlib      # calibration plots
+jupyter           # notebooks/eda.ipynb
+matplotlib        # EDA plots
