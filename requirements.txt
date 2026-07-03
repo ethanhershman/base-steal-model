@@ -1,0 +1,10 @@
+# Core parser, run-expectancy, and tests need only the standard library.
+# These are for the modeling + Statcast pieces you'll run on your own machine.
+pandas
+scikit-learn
+pybaseball        # Statcast/Retrosheet pulls (works off-sandbox)
+pytest            # test suite
+# Optional, for the upgraded model (see ROADMAP.md):
+# xgboost
+# lightgbm
+# matplotlib      # calibration plots

@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.ipynb_checkpoints/
+.pytest_cache/
+.DS_Store
+
+# Generated data (regenerate with the parser). The raw 2023 Retrosheet files
+# and the sample outputs ARE committed so the repo runs out of the box; larger
+# pulls you add later are ignored:
+data/retrosheet_2019/
+data/retrosheet_2020/
+data/retrosheet_2021/
+data/retrosheet_2022/
+data/retrosheet_2024/
+data/retrosheet_2025/
+data/statcast/
