@@ -143,6 +143,14 @@ def build_features(steals_paths: list, statcast_dir: str) -> list:
             # 10.5): 100% success across 2023-2025, since the defense can
             # only really contest one of the runners.
             "is_double_steal": int(r["double_steal"]),
+            # A runner ALSO on 3rd during a steal of 2nd (single-runner, not
+            # a double steal) -- catchers are reluctant to risk a wild throw
+            # letting that run score, so they often concede the steal.
+            # 76.7% -> 91.5% success in the data, holds (and strengthens)
+            # across every out count (see notebooks/eda.ipynb, section 10.6).
+            # Only meaningful for target_base "2"/"3" -- for "H" the runner
+            # on 3rd IS the one stealing, not another runner.
+            "runner_on_third": int(bool(r["on_3b"]) and r["target_base"] != "H"),
             # leakage-safe prior skill estimates (carry across seasons)
             "runner_prior_sr": round(rate(r_succ[runner], r_att[runner], 0.75), 4),
             "runner_prior_att": r_att[runner],

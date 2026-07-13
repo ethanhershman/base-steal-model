@@ -114,17 +114,25 @@ Checked in `notebooks/eda.ipynb` against known facts (all pass):
   previously invisible to the model, which only distinguished "2nd" from
   "everything else." Now split into explicit `steal_of_third`/
   `steal_of_home` features.
+- **A runner ALSO on 3rd during a steal of 2nd changes the odds a lot:**
+  76.7% → 91.5% success. Catchers are reluctant to risk a bad throw to 2nd
+  letting that run score, so they often concede the steal. The effect
+  holds — and strengthens — at every out count (2 outs: 78.1% → 92.6%),
+  so it isn't confounded with something else. Runner-on-1st during a steal
+  of 3rd, by contrast, has no meaningful effect (81.6% vs. 81.9%). Only
+  the 3rd-base case is added, as `runner_on_third`.
 
 ## Features
 
-25 columns total; `season`/`date`/`runner_id`/`pitcher_id`/`catcher_id`/
-`target_base` are identifiers, the other 19 (`NUMERIC` in `src/train.py`)
+26 columns total; `season`/`date`/`runner_id`/`pitcher_id`/`catcher_id`/
+`target_base` are identifiers, the other 20 (`NUMERIC` in `src/train.py`)
 go into the model:
 
 | feature | notes |
 |---|---|
-| `is_double_steal` | 2+ runners on the same pitch; ~100% success (see above) |
+| `is_double_steal` | 2+ runners on the same pitch; ~100% success |
 | `steal_of_third`, `steal_of_home` | 2nd base is the implicit baseline |
+| `runner_on_third` | another runner on 3rd during a steal of 2nd/3rd; 76.7% → 91.5% success |
 | `late_inning`, `inning` | success rises in innings 7+ |
 | `outs`, `balls`, `strikes` | count/out-state at the pitch |
 | `score_diff`, `close_game` | blowouts (either direction) → easier; close/tied → harder |
@@ -139,6 +147,9 @@ go into the model:
 Considered and deliberately left out: pitcher tempo/time-to-plate and
 pickoff-attempt rate aren't cleanly available from public Statcast
 leaderboards without a much deeper pitch-level pull — see ROADMAP.md.
+Runner-on-1st during a steal of 3rd, and any base-occupancy effect on
+steals of home, were checked and found to have no meaningful/reliable
+signal (see `notebooks/eda.ipynb`, section 10.6) — left out.
 
 ## Models
 
@@ -148,41 +159,42 @@ chronologically last 20% of rows (2025/06/01-2025/11/01)
 
 | model | log loss | brier | AUC |
 |---|---|---|---|
-| Logistic regression | 0.4958 | 0.1628 | 0.6502 |
-| XGBoost (early-stopped) | **0.4957** | **0.1625** | 0.6433 |
+| Logistic regression | **0.4858** | **0.1600** | **0.6787** |
+| XGBoost (early-stopped) | 0.4869 | 0.1603 | 0.6666 |
 
-- Adding `is_double_steal`, `steal_of_third`/`steal_of_home`, and
-  `runner_age` took AUC from ~0.60 to **~0.65** and log loss from ~0.52 to
-  ~0.496 — a real, meaningful jump, not the modest one we saw from
-  Statcast alone. The double-steal and steal-of-home features were doing
-  most of the work: both are strong, close-to-deterministic signals that
-  were previously invisible to the model.
+- Adding `is_double_steal`, `steal_of_third`/`steal_of_home`, `runner_age`,
+  and `runner_on_third` took AUC from ~0.60 to **~0.67-0.68** and log loss
+  from ~0.52 to **~0.486** — a real, meaningful jump, not the modest one we
+  saw from Statcast alone. `is_double_steal`, `steal_of_home`, and
+  `runner_on_third` are XGBoost's top-3 features by importance.
 - XGBoost and logistic land within noise of each other; neither dominates.
 - Calibration tracks the diagonal closely across deciles for both models.
 - Logistic coefficient signs all match baseball intuition: `is_double_steal`
-  strongly positive, `steal_of_home` strongly negative, higher catcher pop
-  time (slower catcher) raises success odds, LHP and higher catcher
-  caught-stealing rate lower it, higher runner/pitcher prior success rate
-  raises it.
+  and `runner_on_third` strongly positive, `steal_of_home` strongly
+  negative, higher catcher pop time (slower catcher) raises success odds,
+  LHP and higher catcher caught-stealing rate lower it, higher
+  runner/pitcher prior success rate raises it.
 
 ### Where the model is still wrong (`python -m src.train --diagnostics`)
 
 A standard 0.5 probability threshold is still not that meaningful — steal
 success is a ~78% base-rate event, so most predicted probabilities cluster
-well above 0.5. At the test base rate (~0.78) threshold, precision/recall/
-specificity are now noticeably better than before the new features (roughly
-0.83/0.60/0.60 vs. 0.81/0.62/0.51 previously) — see the confusion-matrix
-tables in `notebooks/eda.ipynb`, section 12, for the exact current numbers.
+well above 0.5. At the test base rate (~0.78) threshold, precision and
+specificity are meaningfully better than before these features (precision
+~0.85-0.87, specificity ~0.65-0.71, vs. ~0.81-0.85/~0.51-0.62 previously);
+recall is somewhat lower since predictions are now more spread out and
+selective — see the confusion-matrix tables in `notebooks/eda.ipynb`,
+section 12, for exact current numbers.
 
-For the remaining misses (normal, single-runner attempts), the pattern is
-unchanged: false positives (predicted high, actually caught) are runners
-with *great* stats who still got thrown out; false negatives are mediocre
-runners who still made it. Season-level aggregate skill stats can't see the
-thing that actually decides most individual attempts: exact lead distance,
-jump timing, pitch type/location, and throw accuracy on that specific play.
-None of that is in the public data (see "Known limitations" below), so this
-is closer to today's ceiling for this feature set than a sign of a broken
-model.
+For the remaining misses (normal, single-runner attempts with no other
+base traffic), the pattern is unchanged: false positives (predicted high,
+actually caught) are runners with *great* stats who still got thrown out;
+false negatives are mediocre runners who still made it. Season-level
+aggregate skill stats can't see the thing that actually decides most of
+these attempts: exact lead distance, jump timing, pitch type/location, and
+throw accuracy on that specific play. None of that is in the public data
+(see "Known limitations" below), so this is closer to today's ceiling for
+this feature set than a sign of a broken model.
 
 ## Known limitations
 

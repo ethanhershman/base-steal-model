@@ -28,7 +28,7 @@ import argparse
 
 
 NUMERIC = [
-    "steal_of_third", "steal_of_home", "is_double_steal",
+    "steal_of_third", "steal_of_home", "is_double_steal", "runner_on_third",
     "late_inning", "outs", "balls", "strikes",
     "score_diff", "close_game", "runner_bats_lhb", "pitcher_throws_lhp",
     "runner_prior_sr", "runner_prior_att",
