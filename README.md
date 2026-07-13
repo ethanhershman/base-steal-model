@@ -10,12 +10,12 @@ Two connected pieces (see [`ROADMAP.md`](ROADMAP.md) for the full design):
    success rate for that situation, and recommend a steal only when the
    predicted probability clears it.
 
-This repo is currently focused on **step 1: getting clean, validated data.**
-It ships with four parsed seasons (2021, 2022, 2023, 2024), Statcast skill
-data joined on via an id crosswalk, and a leakage-safe combined feature
-table. Training the actual success-probability model and the decision layer
-(see [`ROADMAP.md`](ROADMAP.md)) come next, once the data foundation is
-trusted.
+This repo has the data foundation done — four parsed seasons (2021, 2022,
+2023, 2024), Statcast skill data joined on via an id crosswalk, and a
+leakage-safe combined feature table — plus a first baseline model
+(logistic regression, temporally validated). The decision layer (see
+[`ROADMAP.md`](ROADMAP.md)) and a stronger model (gradient boosting) come
+next.
 
 ## Quick start
 
@@ -39,6 +39,10 @@ python -m src.id_crosswalk --out data/statcast/id_crosswalk.csv
 # 3. Build the combined, leakage-safe, Statcast-joined feature table
 python -m src.features --out data/sample/features_2021_2024.csv
 
+# 4. Train + evaluate the logistic regression baseline (temporal split:
+#    train on seasons before --test-season, test on that season)
+python -m src.train --features data/sample/features_2021_2024.csv --test-season 2024
+
 # Validate the parser against known facts
 python -m pytest tests/ -q
 ```
@@ -56,6 +60,7 @@ leakage checks.
 | `src/statcast_pull.py` | Pulls Statcast skill data (sprint speed, pop time) per season. |
 | `src/id_crosswalk.py` | Builds the Retrosheet id <-> MLBAM id crosswalk (via Chadwick register) needed to join Statcast onto Retrosheet rows. |
 | `src/features.py` | Combines all parsed seasons into one leakage-safe, Statcast-joined feature table (running runner/pitcher/catcher priors from prior attempts only). |
+| `src/train.py` | Baseline logistic-regression success-probability model, temporally split (train on earlier seasons, test on the held-out latest one). |
 | `notebooks/eda.ipynb` | Exploratory checks + validation for every step above. |
 | `tests/` | Regression tests (leaderboard, success rate). |
 | `data/retrosheet_2023/` | Bundled raw 2023 event + roster files. |
@@ -82,6 +87,23 @@ Checked in `notebooks/eda.ipynb` against known facts (all pass):
 - The combined feature table is leakage-safe: every runner's first-ever
   attempt has zero prior attempts, and running tallies match file order
   exactly.
+- Steal success rate against LHP (75.4%) is meaningfully lower than RHP
+  (78.9%) — the known "lefties hold runners better" effect shows up in
+  the data.
+
+## Baseline model
+
+Logistic regression, trained on 2021-2023 and tested on the held-out 2024
+season (`python -m src.train`):
+
+- **AUC 0.593** (up from ~0.58 with Retrosheet-only features) — a real but
+  modest lift; gradient boosting + feature interactions is the next lever,
+  not more raw features.
+- Calibration tracks the diagonal closely across deciles.
+- Every coefficient sign matches baseball intuition: higher catcher pop
+  time (slower catcher) raises success odds, LHP and higher catcher
+  caught-stealing rate lower them, higher runner/pitcher prior success
+  rate raises them.
 
 ## Known limitations
 

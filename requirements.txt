@@ -1,7 +1,11 @@
 # Core parser needs only the standard library.
-# These are for data pulls, validation, and the EDA notebook.
+# These are for data pulls, validation, modeling, and the EDA notebook.
 pandas
 pybaseball        # Statcast pulls + Chadwick id crosswalk (works off-sandbox)
 pytest            # test suite
 jupyter           # notebooks/eda.ipynb
 matplotlib        # EDA plots
+scikit-learn      # baseline logistic regression model
+# Optional, for the upgraded model (see ROADMAP.md):
+# xgboost
+# lightgbm

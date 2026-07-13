@@ -119,6 +119,7 @@ def build_features(steals_paths: list, statcast_dir: str) -> list:
             "score_diff": r["score_diff"],
             "close_game": int(abs(int(r["score_diff"])) <= 1),
             "runner_bats_lhb": int(r["runner_bats"] == "L"),
+            "pitcher_throws_lhp": int(r["pitcher_throws"] == "L"),
             # leakage-safe prior skill estimates (carry across seasons)
             "runner_prior_sr": round(rate(r_succ[runner], r_att[runner], 0.75), 4),
             "runner_prior_att": r_att[runner],

@@ -259,7 +259,7 @@ def update_state(event: str, gs: GameState, batter: str) -> None:
 STEAL_ROW_FIELDS = [
     "game_id", "date", "park", "inning", "half", "outs",
     "target_base", "runner_id", "runner_bats",
-    "pitcher_id", "catcher_id", "batter_id", "count",
+    "pitcher_id", "pitcher_throws", "catcher_id", "batter_id", "count",
     "score_bat", "score_def", "score_diff",
     "on_1b", "on_2b", "on_3b", "success",
 ]
@@ -327,6 +327,7 @@ def parse_file(path: str, players: dict, rows: list, diag: dict) -> None:
                         "runner_id": runner,
                         "runner_bats": players.get(runner, {}).get("bats", ""),
                         "pitcher_id": gs.pitcher[defense],
+                        "pitcher_throws": players.get(gs.pitcher[defense], {}).get("throws", ""),
                         "catcher_id": gs.catcher[defense],
                         "batter_id": batter,
                         "count": count,
