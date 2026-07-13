@@ -7,6 +7,15 @@ chronologically-ordered table, then:
   * computes running runner/pitcher/catcher success-rate priors from
     PRIOR attempts only (across season boundaries, not just within one
     season), so the model never peeks at the outcome it's predicting.
+  * merges in every plate appearance from `battinglines_<year>.csv`
+    (written by `retrosheet_parser.py --batting-out`) to compute a
+    leakage-safe running AVG/OBP/SLG/HR% for the batter at the plate
+    during each steal attempt -- NOT season-level stats, which would leak
+    a batter's September numbers into an April prediction. Steal rows and
+    batting rows are interleaved using an exact per-game play sequence
+    number (`play_seq`, from the parser) rather than (inning, outs) alone,
+    since out count can repeat many times within one half-inning across
+    different plate appearances and isn't precise enough on its own.
   * joins Statcast skill data (runner sprint speed, catcher pop time) for
     the matching season, via the Retrosheet<->MLBAM id crosswalk built by
     `src/id_crosswalk.py`. Rows for players with no Statcast row get a
@@ -60,21 +69,40 @@ def _season_of(path: str) -> str:
     return os.path.basename(path).split("_")[-1].replace(".csv", "")
 
 
-def build_features(steals_paths: list, statcast_dir: str) -> list:
+def _load_batting_rows(paths: list) -> list:
+    rows = []
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        with open(path, newline="") as fh:
+            rows.extend(csv.DictReader(fh))
+    return rows
+
+
+def build_features(steals_paths: list, statcast_dir: str,
+                   batting_paths: list = None) -> list:
     crosswalk = load_crosswalk(os.path.join(statcast_dir, "id_crosswalk.csv"))
 
-    rows = []
+    steal_rows = []
     for path in steals_paths:
         season = _season_of(path)
         with open(path, newline="") as fh:
             for r in csv.DictReader(fh):
                 r["season"] = season
-                rows.append(r)
+                steal_rows.append(r)
 
-    # Chronological order across seasons, so running priors never leak from
-    # a later attempt (or a later season) into an earlier one.
-    rows.sort(key=lambda r: (r["date"], r["game_id"], int(r["inning"]),
-                             int(r["outs"])))
+    batting_rows = _load_batting_rows(batting_paths or [])
+
+    # Merge into one chronological walk. Steal rows are listed BEFORE
+    # batting rows in this pre-sort order so that, when both share the
+    # exact same (date, game_id, play_seq) -- i.e. they're the SAME play,
+    # like "K+SB2" (a strikeout and a steal attempt together) -- Python's
+    # stable sort keeps the steal row first: we read the batter's prior
+    # stats (not yet including this at-bat's own outcome) before applying
+    # this play's own batting-outcome update.
+    combined = [("steal", r) for r in steal_rows] + [("bat", r) for r in batting_rows]
+    combined.sort(key=lambda item: (item[1]["date"], item[1]["game_id"],
+                                    int(item[1]["play_seq"])))
 
     sprint_tables, age_tables, pop_tables = {}, {}, {}
 
@@ -100,13 +128,41 @@ def build_features(steals_paths: list, statcast_dir: str) -> list:
     r_att, r_succ = defaultdict(int), defaultdict(int)
     p_att, p_succ = defaultdict(int), defaultdict(int)
     c_att, c_caught = defaultdict(int), defaultdict(int)
+    # batter tallies: at-bats, hits, walks, hit-by-pitch, sac flies, total
+    # bases, home runs, plate appearances (for HR%'s denominator)
+    b_ab, b_hit = defaultdict(int), defaultdict(int)
+    b_bb, b_hbp, b_sf = defaultdict(int), defaultdict(int), defaultdict(int)
+    b_bases, b_hr, b_pa = defaultdict(int), defaultdict(int), defaultdict(int)
 
     def rate(succ, att, prior):
         return (succ + prior * 5) / (att + 5)  # 5-attempt shrinkage to prior
 
+    # Shrinkage toward modern-era league-average rates; batting stats need
+    # a bigger sample than steal attempts to stabilize, so a larger
+    # shrinkage constant than the "+5" above.
+    BAT_SHRINK = 50
+
+    def batter_rate(num, denom, prior):
+        return (num + prior * BAT_SHRINK) / (denom + BAT_SHRINK)
+
     out = []
-    for r in rows:
+    for kind, r in combined:
+        if kind == "bat":
+            batter = r["batter_id"]
+            ab, hit, bases = int(r["ab"] == "True"), int(r["hit"] == "True"), int(r["bases"])
+            bb, hbp, sf = int(r["bb"] == "True"), int(r["hbp"] == "True"), int(r["sf"] == "True")
+            b_ab[batter] += ab
+            b_hit[batter] += hit
+            b_bb[batter] += bb
+            b_hbp[batter] += hbp
+            b_sf[batter] += sf
+            b_bases[batter] += bases
+            b_hr[batter] += int(hit and bases == 4)
+            b_pa[batter] += ab + bb + hbp + sf
+            continue
+
         runner, pitcher, catcher = r["runner_id"], r["pitcher_id"], r["catcher_id"]
+        batter = r["batter_id"]
         season = r["season"]
         balls, strikes = _balls_strikes(r["count"])
         success = int(r["success"])
@@ -117,12 +173,15 @@ def build_features(steals_paths: list, statcast_dir: str) -> list:
         runner_age = age_for(season).get(runner_mlbam) if runner_mlbam else None
         pop_time = pop_for(season).get(catcher_mlbam) if catcher_mlbam else None
 
+        batter_pa = b_ab[batter] + b_bb[batter] + b_hbp[batter] + b_sf[batter]
+
         feat = {
             "season": season,
             "date": r["date"],
             "runner_id": runner,
             "pitcher_id": pitcher,
             "catcher_id": catcher,
+            "batter_id": batter,
             "target_base": r["target_base"],
             # steal_of_second is the implicit baseline; third/home get their
             # own dummies since their success rates are wildly different
@@ -156,6 +215,18 @@ def build_features(steals_paths: list, statcast_dir: str) -> list:
             "runner_prior_att": r_att[runner],
             "pitcher_prior_sr_allowed": round(rate(p_succ[pitcher], p_att[pitcher], 0.75), 4),
             "catcher_prior_cs_rate": round(rate(c_caught[catcher], c_att[catcher], 0.20), 4),
+            # leakage-safe running batter offense (the person AT THE PLATE
+            # during the steal, not the runner) -- season-level stats would
+            # leak a batter's September numbers into an April prediction,
+            # so this only ever reflects plate appearances strictly before
+            # this one, shrunk toward modern-era league-average rates.
+            "batter_prior_avg": round(batter_rate(b_hit[batter], b_ab[batter], 0.248), 4),
+            "batter_prior_obp": round(batter_rate(
+                b_hit[batter] + b_bb[batter] + b_hbp[batter],
+                b_ab[batter] + b_bb[batter] + b_hbp[batter] + b_sf[batter], 0.317), 4),
+            "batter_prior_slg": round(batter_rate(b_bases[batter], b_ab[batter], 0.410), 4),
+            "batter_prior_hr_pct": round(batter_rate(b_hr[batter], batter_pa, 0.030), 4),
+            "batter_prior_pa": batter_pa,
             # Statcast join (season-matched, missing-flagged rather than guessed)
             "runner_sprint_speed": sprint_speed if sprint_speed is not None else "",
             "runner_sprint_speed_missing": int(sprint_speed is None),
@@ -190,11 +261,13 @@ def main():
     ap.add_argument("--out", default="data/sample/features_2023_2025.csv")
     args = ap.parse_args()
 
-    paths = [os.path.join(args.steals_dir, f"steals_{y}.csv") for y in args.seasons]
-    missing = [p for p in paths if not os.path.exists(p)]
+    steals_paths = [os.path.join(args.steals_dir, f"steals_{y}.csv") for y in args.seasons]
+    missing = [p for p in steals_paths if not os.path.exists(p)]
     if missing:
         raise SystemExit(f"missing parsed season file(s): {missing}")
-    feats = build_features(paths, args.statcast_dir)
+    batting_paths = [os.path.join(args.steals_dir, f"battinglines_{y}.csv") for y in args.seasons]
+
+    feats = build_features(steals_paths, args.statcast_dir, batting_paths)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(feats[0].keys()))
@@ -203,9 +276,11 @@ def main():
 
     n_missing_sprint = sum(f["runner_sprint_speed_missing"] for f in feats)
     n_missing_pop = sum(f["catcher_pop_time_missing"] for f in feats)
-    print(f"wrote {len(feats)} feature rows from {len(paths)} seasons -> {args.out}")
+    n_missing_batting = sum(f["batter_prior_pa"] == 0 for f in feats)
+    print(f"wrote {len(feats)} feature rows from {len(steals_paths)} seasons -> {args.out}")
     print(f"missing sprint speed: {n_missing_sprint}/{len(feats)}  "
           f"missing pop time: {n_missing_pop}/{len(feats)}")
+    print(f"zero prior batting PA (cold start): {n_missing_batting}/{len(feats)}")
 
 
 if __name__ == "__main__":

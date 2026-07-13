@@ -17,3 +17,8 @@ data/retrosheet_2022/
 data/retrosheet_2024/
 data/retrosheet_2025/
 data/statcast/
+
+# Full plate-appearance-level batting lines (~14MB/season, one row per PA
+# rather than one row per steal attempt) -- regenerate with
+# `retrosheet_parser.py --batting-out`, too large to commit.
+data/sample/battinglines_*.csv

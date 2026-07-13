@@ -33,11 +33,19 @@ pip install -r requirements.txt
 # ModuleNotFoundError even though `pip install` succeeded elsewhere.
 
 # 1. Parse steal attempts from the bundled Retrosheet data (2021-2025;
-#    2023 ships in the repo, fetch the others first if you don't have them)
+#    2023 ships in the repo, fetch the others first if you don't have them).
+#    --batting-out also writes every plate appearance for leakage-safe
+#    running batter stats (AVG/OBP/SLG/HR%) -- only needed for 2023-2025,
+#    since 2021-2022 aren't used in the feature table anyway.
 python -m src.fetch_retrosheet --seasons 2021 2022 2024 2025 --dest data
-for y in 2021 2022 2023 2024 2025; do
+for y in 2021 2022; do
   python -m src.retrosheet_parser --data-dir data/retrosheet_$y \
       --out data/sample/steals_$y.csv
+done
+for y in 2023 2024 2025; do
+  python -m src.retrosheet_parser --data-dir data/retrosheet_$y \
+      --out data/sample/steals_$y.csv \
+      --batting-out data/sample/battinglines_$y.csv
 done
 
 # 2. Pull Statcast skill tables + build the Retrosheet<->MLBAM id crosswalk
@@ -68,11 +76,11 @@ most-confident-wrong predictions).
 
 | File | Purpose |
 |------|---------|
-| `src/retrosheet_parser.py` | Parses Retrosheet event files into one row per steal attempt, tracking base/out/score state. **Tested & validated.** |
+| `src/retrosheet_parser.py` | Parses Retrosheet event files into one row per steal attempt, tracking base/out/score state. `--batting-out` also classifies every plate appearance (AVG/OBP/SLG inputs). **Tested & validated.** |
 | `src/fetch_retrosheet.py` | Downloads more seasons from the Retrosheet GitHub mirror. |
 | `src/statcast_pull.py` | Pulls Statcast skill data (sprint speed, pop time) per season. |
 | `src/id_crosswalk.py` | Builds the Retrosheet id <-> MLBAM id crosswalk (via Chadwick register) needed to join Statcast onto Retrosheet rows. |
-| `src/features.py` | Combines the post-rule-change seasons (default 2023-2025) into one leakage-safe, Statcast-joined feature table (running runner/pitcher/catcher priors from prior attempts only). |
+| `src/features.py` | Combines the post-rule-change seasons (default 2023-2025) into one leakage-safe, Statcast-joined feature table (running runner/pitcher/catcher/batter priors from prior attempts only). |
 | `src/train.py` | Trains + evaluates the logistic-regression baseline and an XGBoost model (`--model logistic\|xgboost\|both`), date-based split (train on the earliest dates, test on the latest `--test-frac`) so no future data ever leaks into training. |
 | `notebooks/eda.ipynb` | Exploratory checks + validation for every step above. |
 | `tests/` | Regression tests (leaderboard, success rate). |
@@ -124,9 +132,10 @@ Checked in `notebooks/eda.ipynb` against known facts (all pass):
 
 ## Features
 
-26 columns total; `season`/`date`/`runner_id`/`pitcher_id`/`catcher_id`/
-`target_base` are identifiers, the other 20 (`NUMERIC` in `src/train.py`)
-go into the model:
+31 columns total in `data/sample/features_2023_2025.csv`;
+`season`/`date`/`runner_id`/`pitcher_id`/`catcher_id`/`batter_id`/
+`target_base` are identifiers. 20 of the remaining 24 (`NUMERIC` in
+`src/train.py`) go into the trained model:
 
 | feature | notes |
 |---|---|
@@ -144,6 +153,10 @@ go into the model:
 | `runner_age` (+missing flag) | Statcast, season-matched |
 | `catcher_pop_time` (+missing flag) | Statcast, season-matched |
 
+**In the feature table but NOT in the trained model:**
+`batter_prior_avg`/`obp`/`slg`/`hr_pct`/`pa` — the batter at the plate's
+leakage-safe running offensive stats (see below).
+
 Considered and deliberately left out: pitcher tempo/time-to-plate and
 pickoff-attempt rate aren't cleanly available from public Statcast
 leaderboards without a much deeper pitch-level pull — see ROADMAP.md.
@@ -156,6 +169,20 @@ univariate effects, but an ablation showed neither improves the full
 model (log loss/AUC flat-to-worse in every configuration) — implemented,
 tested, and reverted; see `notebooks/eda.ipynb`, section 10.7.
 
+**Batter offense (AVG/OBP/SLG/HR%)** — computed properly this time: leakage-
+safe running stats from every plate appearance (`retrosheet_parser.py
+--batting-out`, cross-validated against `pybaseball`'s Baseball-Reference
+data — 450 players, max discrepancy 0.014 AVG points, mean 0.0012), merged
+with steal-attempt rows using an exact per-game play sequence number
+(`play_seq`) rather than out-count alone. An earlier session found a real
+univariate correlation using non-leakage-safe season stats; the proper
+leakage-safe version doesn't survive an ablation against the full model
+(log loss/AUC flat within noise in every configuration — likely because
+`runner_sprint_speed`/`runner_prior_sr` already absorb most of this
+signal, since better athletes tend to be both better hitters and better
+runners). Kept in the feature table for future use, excluded from
+training. See `notebooks/eda.ipynb`, sections 10.8-10.9.
+
 ## Models
 
 Date-based split — trained on 2023/03/30-2025/06/01, tested on the
@@ -164,14 +191,17 @@ chronologically last 20% of rows (2025/06/01-2025/11/01)
 
 | model | log loss | brier | AUC |
 |---|---|---|---|
-| Logistic regression | 0.4858 | 0.1600 | **0.6787** |
-| XGBoost | **0.4847** | **0.1594** | 0.6741 |
+| Logistic regression | 0.4857 | 0.1600 | **0.6789** |
+| XGBoost | **0.4838** | **0.1592** | 0.6762 |
 
 - Adding `is_double_steal`, `steal_of_third`/`steal_of_home`, `runner_age`,
-  and `runner_on_third` took AUC from ~0.60 to **~0.67-0.68** and log loss
-  from ~0.52 to **~0.485** — a real, meaningful jump, not the modest one we
+  and `runner_on_third` took AUC from ~0.60 to **~0.68** and log loss
+  from ~0.52 to **~0.484** — a real, meaningful jump, not the modest one we
   saw from Statcast alone. `is_double_steal`, `steal_of_home`, and
-  `runner_on_third` are XGBoost's top-3 features by importance.
+  `runner_on_third` are XGBoost's top-3 features by importance. The
+  `play_seq`-based exact chronological ordering (added for the batter-stats
+  work, see Features above) also improved precision slightly on top of that
+  (XGBoost log loss 0.4847 → 0.4838).
 - XGBoost and logistic land within noise of each other; neither dominates.
   (`fit_xgboost` uses a validation slice only to pick the right number of
   boosting rounds via early stopping, then refits on the full training set

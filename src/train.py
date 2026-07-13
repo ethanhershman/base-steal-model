@@ -33,6 +33,11 @@ NUMERIC = [
     "score_diff", "close_game", "runner_bats_lhb", "pitcher_throws_lhp",
     "runner_prior_sr", "runner_prior_att",
     "pitcher_prior_sr_allowed", "catcher_prior_cs_rate",
+    # batter_prior_avg/obp/slg/hr_pct/pa are computed in the feature table
+    # (leakage-safe, cross-validated against pybaseball's bref stats) but
+    # excluded here: an ablation showed none of them improve log loss/AUC
+    # once added to the rest of this feature set -- see
+    # notebooks/eda.ipynb, section 10.9.
     "runner_sprint_speed", "runner_sprint_speed_missing",
     "runner_age", "runner_age_missing",
     "catcher_pop_time", "catcher_pop_time_missing",

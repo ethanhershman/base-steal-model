@@ -69,6 +69,12 @@ class GameState:
     catcher: dict = field(default_factory=lambda: {0: None, 1: None})
     # extra-innings "ghost runner" placement waiting for the next half-inning
     pending_radj: list = field(default_factory=list)
+    # monotonically increasing per-game play counter, for an unambiguous
+    # chronological sort key -- (inning, outs) alone can repeat multiple
+    # times within one half-inning (any play before the first out shares
+    # outs=0, for instance), which isn't precise enough to interleave
+    # per-plate-appearance batting rows with steal-attempt rows correctly.
+    play_seq: int = 0
 
     def new_half_inning(self, inning: int, half: int) -> None:
         if inning != self.inning or half != self.half:
@@ -253,19 +259,114 @@ def update_state(event: str, gs: GameState, batter: str) -> None:
         gs.outs += 1
 
 
+def classify_batter_outcome(event: str):
+    """Classify a play's *batter* outcome for cumulative batting stats.
+
+    Returns None if this play doesn't resolve the batter's plate appearance
+    (a bare baserunning play like a steal/pickoff with no batter token, or
+    'NP'). Otherwise returns a dict with the fields needed for AVG/OBP/SLG/
+    HR%: ab, hit, bases (total bases if a hit), bb, hbp, sf (sacrifice fly).
+
+    Mirrors the same token classification as `update_state` (kept in sync
+    deliberately -- these read the same Retrosheet event grammar) but
+    doesn't touch game state, and additionally checks for the '/SF' and
+    '/SH' modifiers (stripped off before `update_state` ever sees them)
+    since sacrifices are excluded from the AB/OBP-denominator counts that
+    matter for batting stats but not for state tracking.
+    """
+    event = _strip_markers(event).strip()
+    if event in ("NP", ""):
+        return None
+
+    basic, _, adv = event.partition(".")
+    modifiers = basic.split("/")[1:]
+    primary = basic.split("/")[0]
+    is_sac_fly = any(m.startswith("SF") for m in modifiers)
+    is_sac_bunt = any(m.startswith("SH") for m in modifiers)
+    tokens = re.split(r"[+;]", primary)
+
+    batter_dest = None
+    for tok in tokens:
+        if re.match(r"(SB|CS|POCS|PO)[123H]", tok):
+            continue
+        if tok and tok[0] in BATTER_HIT:
+            batter_dest = BATTER_HIT[tok[0]]
+            continue
+        if tok.startswith("HP"):
+            batter_dest = "hbp"
+            continue
+        if tok.startswith("HR") or (tok.startswith("H") and not tok.startswith("HP")):
+            batter_dest = "hr"
+            continue
+        if tok.startswith(("IW", "I", "W")) and not tok.startswith("WP"):
+            batter_dest = "bb"
+            continue
+        if tok.startswith("E") and not tok.startswith("FLE"):
+            batter_dest = "reached"
+            continue
+        if tok.startswith("FC"):
+            batter_dest = "reached"
+            continue
+        if tok.startswith(("DGR", "GR")):
+            batter_dest = 2
+            continue
+        if tok.startswith("K"):
+            if not re.search(r"\bB-", adv):
+                batter_dest = "out"
+            continue
+        if tok and tok[0].isdigit():
+            forced = re.findall(r"\((\d)\)", tok)
+            if not forced or re.search(r"\)\d", tok):
+                batter_dest = "out"
+            continue
+
+    if batter_dest is None:
+        # No token classified the batter -- either a bare baserunning play
+        # (e.g. a plain SB with nothing else), or the batter reached via an
+        # explicit advance with no distinguishing primary token. Treat the
+        # latter (an explicit 'B-'/'BX' advance) as a non-hit at-bat.
+        if re.search(r"\bB[-X]", adv):
+            return {"ab": True, "hit": False, "bases": 0, "bb": False, "hbp": False, "sf": False}
+        return None
+
+    if isinstance(batter_dest, int):
+        return {"ab": True, "hit": True, "bases": batter_dest, "bb": False, "hbp": False, "sf": False}
+    if batter_dest == "hr":
+        return {"ab": True, "hit": True, "bases": 4, "bb": False, "hbp": False, "sf": False}
+    if batter_dest == "hbp":
+        return {"ab": False, "hit": False, "bases": 0, "bb": False, "hbp": True, "sf": False}
+    if batter_dest == "bb":
+        return {"ab": False, "hit": False, "bases": 0, "bb": True, "hbp": False, "sf": False}
+    if batter_dest == "reached":
+        return {"ab": True, "hit": False, "bases": 0, "bb": False, "hbp": False, "sf": False}
+    if batter_dest == "out":
+        if is_sac_fly:
+            return {"ab": False, "hit": False, "bases": 0, "bb": False, "hbp": False, "sf": True}
+        if is_sac_bunt:
+            return None  # sac bunt: excluded from AB and OBP-denominator entirely
+        return {"ab": True, "hit": False, "bases": 0, "bb": False, "hbp": False, "sf": False}
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Main parse loop
 # ---------------------------------------------------------------------------
 STEAL_ROW_FIELDS = [
-    "game_id", "date", "park", "inning", "half", "outs",
+    "game_id", "date", "park", "inning", "half", "outs", "play_seq",
     "target_base", "runner_id", "runner_bats",
     "pitcher_id", "pitcher_throws", "catcher_id", "batter_id", "count",
     "score_bat", "score_def", "score_diff",
     "on_1b", "on_2b", "on_3b", "success", "double_steal",
 ]
 
+BATTING_ROW_FIELDS = [
+    "game_id", "date", "inning", "half", "outs", "play_seq", "batter_id",
+    "ab", "hit", "bases", "bb", "hbp", "sf",
+]
 
-def parse_file(path: str, players: dict, rows: list, diag: dict) -> None:
+
+def parse_file(path: str, players: dict, rows: list, diag: dict,
+              batting_rows: list = None) -> None:
     gs = GameState()
     with open(path, newline="") as fh:
         reader = csv.reader(fh)
@@ -298,6 +399,7 @@ def parse_file(path: str, players: dict, rows: list, diag: dict) -> None:
                 # extra-innings automatic runner: radj,player_id,base
                 gs.pending_radj.append((rec[1], int(rec[2])))
             elif tag == "play":
+                gs.play_seq += 1
                 inning, half, batter = int(rec[1]), int(rec[2]), rec[3]
                 count = rec[4]
                 event = rec[6] if len(rec) > 6 else ""
@@ -331,6 +433,7 @@ def parse_file(path: str, players: dict, rows: list, diag: dict) -> None:
                         "inning": inning,
                         "half": half,
                         "outs": gs.outs,
+                        "play_seq": gs.play_seq,
                         "target_base": base,
                         "runner_id": runner,
                         "runner_bats": players.get(runner, {}).get("bats", ""),
@@ -348,6 +451,26 @@ def parse_file(path: str, players: dict, rows: list, diag: dict) -> None:
                         "success": 1 if kind == "SB" else 0,
                         "double_steal": int(is_double),
                     })
+
+                # --- batter outcome, for leakage-safe running batting stats
+                # (AVG/OBP/SLG) elsewhere -- emitted BEFORE update_state so a
+                # play that's both a steal attempt and the batter's own
+                # plate-appearance-ending event (e.g. "K+SB2") keeps the
+                # correct order: read priors first, this outcome updates them
+                # only afterward (see src/features.py).
+                if batting_rows is not None:
+                    outcome = classify_batter_outcome(event)
+                    if outcome is not None:
+                        batting_rows.append({
+                            "game_id": gs.game_id,
+                            "date": gs.date,
+                            "inning": inning,
+                            "half": half,
+                            "outs": gs.outs,
+                            "play_seq": gs.play_seq,
+                            "batter_id": batter,
+                            **outcome,
+                        })
 
                 update_state(event, gs, batter)
 
@@ -421,23 +544,30 @@ def iter_plays(data_dir: str):
             yield r
 
 
-def parse_season(data_dir: str):
+def parse_season(data_dir: str, collect_batting: bool = False):
     players = load_rosters(data_dir)
     rows: list = []
+    batting_rows = [] if collect_batting else None
     diag = {"attempts": 0, "missing_runner": 0, "impossible_state": 0}
     files = sorted(glob.glob(os.path.join(data_dir, "*.EV*")))
     for path in files:
-        parse_file(path, players, rows, diag)
-    return rows, diag, len(files)
+        parse_file(path, players, rows, diag, batting_rows)
+    return rows, diag, len(files), batting_rows
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", default="data/retrosheet_2023")
     ap.add_argument("--out", default="data/sample/steals_2023.csv")
+    ap.add_argument("--batting-out", default=None,
+                    help="also write every plate appearance's batting "
+                         "outcome (for leakage-safe AVG/OBP/SLG/HR%% in "
+                         "src/features.py) to this path, e.g. "
+                         "data/sample/battinglines_2023.csv")
     args = ap.parse_args()
 
-    rows, diag, nfiles = parse_season(args.data_dir)
+    rows, diag, nfiles, batting_rows = parse_season(
+        args.data_dir, collect_batting=bool(args.batting_out))
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=STEAL_ROW_FIELDS)
@@ -453,6 +583,14 @@ def main():
           f"{len(rows)} attempts "
           f"({diag['missing_runner']} unresolved base-state cases)")
     print(f"wrote {args.out}")
+
+    if args.batting_out:
+        os.makedirs(os.path.dirname(args.batting_out), exist_ok=True)
+        with open(args.batting_out, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=BATTING_ROW_FIELDS)
+            w.writeheader()
+            w.writerows(batting_rows)
+        print(f"wrote {len(batting_rows)} plate-appearance rows -> {args.batting_out}")
 
 
 if __name__ == "__main__":
