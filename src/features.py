@@ -76,13 +76,19 @@ def build_features(steals_paths: list, statcast_dir: str) -> list:
     rows.sort(key=lambda r: (r["date"], r["game_id"], int(r["inning"]),
                              int(r["outs"])))
 
-    sprint_tables, pop_tables = {}, {}
+    sprint_tables, age_tables, pop_tables = {}, {}, {}
 
     def sprint_for(season):
         if season not in sprint_tables:
             path = os.path.join(statcast_dir, f"sprint_speed_{season}.csv")
             sprint_tables[season] = load_skill_table(path, "player_id", "sprint_speed")
         return sprint_tables[season]
+
+    def age_for(season):
+        if season not in age_tables:
+            path = os.path.join(statcast_dir, f"sprint_speed_{season}.csv")
+            age_tables[season] = load_skill_table(path, "player_id", "age")
+        return age_tables[season]
 
     def pop_for(season):
         if season not in pop_tables:
@@ -108,6 +114,7 @@ def build_features(steals_paths: list, statcast_dir: str) -> list:
         runner_mlbam = crosswalk.get(runner)
         catcher_mlbam = crosswalk.get(catcher)
         sprint_speed = sprint_for(season).get(runner_mlbam) if runner_mlbam else None
+        runner_age = age_for(season).get(runner_mlbam) if runner_mlbam else None
         pop_time = pop_for(season).get(catcher_mlbam) if catcher_mlbam else None
 
         feat = {
@@ -117,7 +124,11 @@ def build_features(steals_paths: list, statcast_dir: str) -> list:
             "pitcher_id": pitcher,
             "catcher_id": catcher,
             "target_base": r["target_base"],
-            "steal_of_second": int(r["target_base"] == "2"),
+            # steal_of_second is the implicit baseline; third/home get their
+            # own dummies since their success rates are wildly different
+            # (2nd ~79%, 3rd ~82%, home ~42% -- see notebooks/eda.ipynb).
+            "steal_of_third": int(r["target_base"] == "3"),
+            "steal_of_home": int(r["target_base"] == "H"),
             "inning": r["inning"],
             "late_inning": int(int(r["inning"]) >= 7),
             "outs": r["outs"],
@@ -127,6 +138,11 @@ def build_features(steals_paths: list, statcast_dir: str) -> list:
             "close_game": int(abs(int(r["score_diff"])) <= 1),
             "runner_bats_lhb": int(r["runner_bats"] == "L"),
             "pitcher_throws_lhp": int(r["pitcher_throws"] == "L"),
+            # >1 runner moving on the same pitch -- essentially guaranteed
+            # safe in the historical data (see notebooks/eda.ipynb, section
+            # 10.5): 100% success across 2023-2025, since the defense can
+            # only really contest one of the runners.
+            "is_double_steal": int(r["double_steal"]),
             # leakage-safe prior skill estimates (carry across seasons)
             "runner_prior_sr": round(rate(r_succ[runner], r_att[runner], 0.75), 4),
             "runner_prior_att": r_att[runner],
@@ -135,6 +151,8 @@ def build_features(steals_paths: list, statcast_dir: str) -> list:
             # Statcast join (season-matched, missing-flagged rather than guessed)
             "runner_sprint_speed": sprint_speed if sprint_speed is not None else "",
             "runner_sprint_speed_missing": int(sprint_speed is None),
+            "runner_age": runner_age if runner_age is not None else "",
+            "runner_age_missing": int(runner_age is None),
             "catcher_pop_time": pop_time if pop_time is not None else "",
             "catcher_pop_time_missing": int(pop_time is None),
             # label

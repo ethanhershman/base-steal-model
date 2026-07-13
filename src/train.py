@@ -28,11 +28,13 @@ import argparse
 
 
 NUMERIC = [
-    "steal_of_second", "late_inning", "outs", "balls", "strikes",
+    "steal_of_third", "steal_of_home", "is_double_steal",
+    "late_inning", "outs", "balls", "strikes",
     "score_diff", "close_game", "runner_bats_lhb", "pitcher_throws_lhp",
     "runner_prior_sr", "runner_prior_att",
     "pitcher_prior_sr_allowed", "catcher_prior_cs_rate",
     "runner_sprint_speed", "runner_sprint_speed_missing",
+    "runner_age", "runner_age_missing",
     "catcher_pop_time", "catcher_pop_time_missing",
 ]
 
@@ -50,7 +52,11 @@ def calibration_table(y_true, p, n_bins=10):
 def fit_logistic(X_tr, y_tr):
     from sklearn.linear_model import LogisticRegression
 
-    model = LogisticRegression(max_iter=1000)
+    # is_double_steal is ~100% success with zero counterexamples in the
+    # training data (a near-perfectly-separating feature), which makes the
+    # optimizer take much longer to settle than a normal feature would --
+    # bump max_iter rather than let it silently stop early.
+    model = LogisticRegression(max_iter=5000)
     model.fit(X_tr, y_tr)
     return model
 
@@ -184,9 +190,9 @@ def main():
 
     df = pd.read_csv(args.features)
 
-    # Sprint speed / pop time are ~99.8% present; median-fill the rare
-    # misses so a handful of rows don't get a nonsensical 0 ft/s runner.
-    for col in ("runner_sprint_speed", "catcher_pop_time"):
+    # Sprint speed / age / pop time are ~99.8% present; median-fill the rare
+    # misses so a handful of rows don't get a nonsensical 0 ft/s or age-0 runner.
+    for col in ("runner_sprint_speed", "runner_age", "catcher_pop_time"):
         df[col] = df[col].fillna(df[col].median())
 
     # Rows are already chronological (see module docstring), so a date-based

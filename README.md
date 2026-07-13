@@ -104,6 +104,41 @@ Checked in `notebooks/eda.ipynb` against known facts (all pass):
 - Steal success rate against LHP (75.4%) is meaningfully lower than RHP
   (78.9%) — the known "lefties hold runners better" effect shows up in
   the data.
+- **~4% of steal plays (7% of attempt-rows) are true simultaneous double
+  steals** (two runners breaking on the same pitch, encoded by Retrosheet
+  as e.g. `SB3;SB2` on one play line) — **100% of them succeed**, across
+  all three seasons. An earlier project note claimed this was ~0.6%; that
+  was wrong (it conflated unrelated sequential steals that happen to share
+  an out count). Flagged directly as the `is_double_steal` feature.
+- Stealing home (42% success) is far harder than 2nd (79%) or 3rd (82%) —
+  previously invisible to the model, which only distinguished "2nd" from
+  "everything else." Now split into explicit `steal_of_third`/
+  `steal_of_home` features.
+
+## Features
+
+25 columns total; `season`/`date`/`runner_id`/`pitcher_id`/`catcher_id`/
+`target_base` are identifiers, the other 19 (`NUMERIC` in `src/train.py`)
+go into the model:
+
+| feature | notes |
+|---|---|
+| `is_double_steal` | 2+ runners on the same pitch; ~100% success (see above) |
+| `steal_of_third`, `steal_of_home` | 2nd base is the implicit baseline |
+| `late_inning`, `inning` | success rises in innings 7+ |
+| `outs`, `balls`, `strikes` | count/out-state at the pitch |
+| `score_diff`, `close_game` | blowouts (either direction) → easier; close/tied → harder |
+| `runner_bats_lhb`, `pitcher_throws_lhp` | lefty pitchers hold runners better |
+| `runner_prior_sr`, `runner_prior_att` | leakage-safe running success rate + sample size |
+| `pitcher_prior_sr_allowed` | leakage-safe running rate of steals allowed |
+| `catcher_prior_cs_rate` | the catcher's own caught-stealing rate — leakage-safe |
+| `runner_sprint_speed` (+missing flag) | Statcast, season-matched |
+| `runner_age` (+missing flag) | Statcast, season-matched |
+| `catcher_pop_time` (+missing flag) | Statcast, season-matched |
+
+Considered and deliberately left out: pitcher tempo/time-to-plate and
+pickoff-attempt rate aren't cleanly available from public Statcast
+leaderboards without a much deeper pitch-level pull — see ROADMAP.md.
 
 ## Models
 
@@ -113,48 +148,46 @@ chronologically last 20% of rows (2025/06/01-2025/11/01)
 
 | model | log loss | brier | AUC |
 |---|---|---|---|
-| Logistic regression | 0.5201 | 0.1696 | 0.5974 |
-| XGBoost (early-stopped) | **0.5195** | **0.1692** | 0.5921 |
+| Logistic regression | 0.4958 | 0.1628 | 0.6502 |
+| XGBoost (early-stopped) | **0.4957** | **0.1625** | 0.6433 |
 
-- XGBoost edges out logistic on log loss and Brier (the metrics that
-  matter most for a decision model per `ROADMAP.md`) with early stopping
-  on an internal validation slice of the training set — a real but modest
-  win, consistent with everything else we've seen: steal outcomes are
-  inherently noisy and 16 features only carry so much signal. AUC is
-  slightly lower for XGBoost, so neither model dominates the other outright.
-- Both AUCs are up from ~0.58 with Retrosheet-only (no Statcast) features.
+- Adding `is_double_steal`, `steal_of_third`/`steal_of_home`, and
+  `runner_age` took AUC from ~0.60 to **~0.65** and log loss from ~0.52 to
+  ~0.496 — a real, meaningful jump, not the modest one we saw from
+  Statcast alone. The double-steal and steal-of-home features were doing
+  most of the work: both are strong, close-to-deterministic signals that
+  were previously invisible to the model.
+- XGBoost and logistic land within noise of each other; neither dominates.
 - Calibration tracks the diagonal closely across deciles for both models.
-- Logistic coefficient signs all match baseball intuition: higher catcher
-  pop time (slower catcher) raises success odds, LHP and higher catcher
-  caught-stealing rate lower them, higher runner/pitcher prior success
-  rate raises them.
+- Logistic coefficient signs all match baseball intuition: `is_double_steal`
+  strongly positive, `steal_of_home` strongly negative, higher catcher pop
+  time (slower catcher) raises success odds, LHP and higher catcher
+  caught-stealing rate lower it, higher runner/pitcher prior success rate
+  raises it.
 
-### Where the model is wrong (`python -m src.train --diagnostics`)
+### Where the model is still wrong (`python -m src.train --diagnostics`)
 
-AUC ~0.6 looks weak in isolation, so it's worth seeing *why*. A standard
-0.5 probability threshold is meaningless here — steal success is a ~78%
-base-rate event and every predicted probability lands between ~0.5 and
-~0.93, so thresholding at 0.5 predicts "success" for 100% of attempts
-(TP=2109, FP=605, **TN=0**, specificity=0). At a more sensible threshold
-(the test base rate, ~0.78) the model is informative but weak: precision
-~0.81, recall ~0.62, specificity ~0.51.
+A standard 0.5 probability threshold is still not that meaningful — steal
+success is a ~78% base-rate event, so most predicted probabilities cluster
+well above 0.5. At the test base rate (~0.78) threshold, precision/recall/
+specificity are now noticeably better than before the new features (roughly
+0.83/0.60/0.60 vs. 0.81/0.62/0.51 previously) — see the confusion-matrix
+tables in `notebooks/eda.ipynb`, section 12, for the exact current numbers.
 
-Looking at the most confident misses explains the ceiling: false
-positives (predicted high, actually caught) are runners with *great* stats
-— 28-30 ft/s sprint speed, 0.75-0.94 prior success rate — who still got
-thrown out; false negatives (predicted low, actually safe) are mediocre
-runners (24-28 ft/s, weaker priors) who still made it. The model has
-learned real signal (the coefficient/importance directions are all
-sensible), but season-level aggregate skill stats can't see the thing that
-actually decides most individual attempts: exact lead distance, jump
-timing, pitch type/location, and throw accuracy on that specific play.
-None of that is in the public data (see "Known limitations" below), so
-this AUC is closer to the ceiling for this feature set than a sign of a
-broken model.
+For the remaining misses (normal, single-runner attempts), the pattern is
+unchanged: false positives (predicted high, actually caught) are runners
+with *great* stats who still got thrown out; false negatives are mediocre
+runners who still made it. Season-level aggregate skill stats can't see the
+thing that actually decides most individual attempts: exact lead distance,
+jump timing, pitch type/location, and throw accuracy on that specific play.
+None of that is in the public data (see "Known limitations" below), so this
+is closer to today's ceiling for this feature set than a sign of a broken
+model.
 
 ## Known limitations
 
-- ~0.6% of attempts sit in same-play multi-steal snapshots (documented, benign).
 - No lead distance / jump data exists publicly — sprint speed is the proxy.
+- Pitcher tempo, pitch type/location, and pickoff-attempt rate aren't
+  cleanly available from public Statcast leaderboards.
 - Late-inning decisions should eventually use win probability, not run
   expectancy (see `ROADMAP.md`, "one important upgrade").

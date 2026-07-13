@@ -261,7 +261,7 @@ STEAL_ROW_FIELDS = [
     "target_base", "runner_id", "runner_bats",
     "pitcher_id", "pitcher_throws", "catcher_id", "batter_id", "count",
     "score_bat", "score_def", "score_diff",
-    "on_1b", "on_2b", "on_3b", "success",
+    "on_1b", "on_2b", "on_3b", "success", "double_steal",
 ]
 
 
@@ -310,7 +310,15 @@ def parse_file(path: str, players: dict, rows: list, diag: dict) -> None:
 
                 defense = 1 - half  # defensive team index
                 # --- record any steal attempts BEFORE mutating state ---
-                for kind, base in find_steal_events(_strip_markers(event)):
+                steal_events = find_steal_events(_strip_markers(event))
+                # A double (or triple) steal is >1 runner moving on the SAME
+                # play (one pitch) -- Retrosheet encodes that as multiple
+                # SB/CS tokens on a single play line, e.g. "SB3;SB2". These
+                # behave very differently from a normal single-runner steal
+                # (the defense can typically only contest one runner), so
+                # flag it rather than let it look like an ordinary attempt.
+                is_double = len(steal_events) > 1
+                for kind, base in steal_events:
                     frm = FROM_BASE[base]
                     runner = gs.bases.get(frm)
                     diag["attempts"] += 1
@@ -338,6 +346,7 @@ def parse_file(path: str, players: dict, rows: list, diag: dict) -> None:
                         "on_2b": gs.bases[2],
                         "on_3b": gs.bases[3],
                         "success": 1 if kind == "SB" else 0,
+                        "double_steal": int(is_double),
                     })
 
                 update_state(event, gs, batter)
