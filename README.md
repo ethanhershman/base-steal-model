@@ -159,15 +159,20 @@ chronologically last 20% of rows (2025/06/01-2025/11/01)
 
 | model | log loss | brier | AUC |
 |---|---|---|---|
-| Logistic regression | **0.4858** | **0.1600** | **0.6787** |
-| XGBoost (early-stopped) | 0.4869 | 0.1603 | 0.6666 |
+| Logistic regression | 0.4858 | 0.1600 | **0.6787** |
+| XGBoost | **0.4847** | **0.1594** | 0.6741 |
 
 - Adding `is_double_steal`, `steal_of_third`/`steal_of_home`, `runner_age`,
   and `runner_on_third` took AUC from ~0.60 to **~0.67-0.68** and log loss
-  from ~0.52 to **~0.486** — a real, meaningful jump, not the modest one we
+  from ~0.52 to **~0.485** — a real, meaningful jump, not the modest one we
   saw from Statcast alone. `is_double_steal`, `steal_of_home`, and
   `runner_on_third` are XGBoost's top-3 features by importance.
 - XGBoost and logistic land within noise of each other; neither dominates.
+  (`fit_xgboost` uses a validation slice only to pick the right number of
+  boosting rounds via early stopping, then refits on the full training set
+  at that round count — using the early-stopped model directly was
+  throwing away 15% of training data and had flipped XGBoost from beating
+  logistic to losing to it.)
 - Calibration tracks the diagonal closely across deciles for both models.
 - Logistic coefficient signs all match baseball intuition: `is_double_steal`
   and `runner_on_third` strongly positive, `steal_of_home` strongly

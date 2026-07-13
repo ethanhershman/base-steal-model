@@ -65,26 +65,35 @@ def fit_xgboost(X_tr, y_tr, val_frac=0.15):
     from xgboost import XGBClassifier
 
     # Carve a validation slice off the END of the (already chronological)
-    # training set for early stopping. This still never touches the test
-    # set -- it just stops adding trees once held-out log loss stops
-    # improving, so the model doesn't overfit the noisy per-attempt outcome.
+    # training set to FIND how many boosting rounds is right, without
+    # overfitting the noisy per-attempt outcome. But then refit on the FULL
+    # training set for that many rounds -- using early stopping's model
+    # directly throws away 15% of training data for no benefit once the
+    # round count is already chosen, and on this data that gap was large
+    # enough to flip XGBoost from beating logistic regression to losing to
+    # it (log loss 0.4869 held-out-fit vs 0.4847 refit-on-full, at the same
+    # early-stopped round count).
     val_idx = int(len(X_tr) * (1 - val_frac))
     X_fit, X_val = X_tr.iloc[:val_idx], X_tr.iloc[val_idx:]
     y_fit, y_val = y_tr.iloc[:val_idx], y_tr.iloc[val_idx:]
 
-    model = XGBClassifier(
-        n_estimators=300,
+    params = dict(
         max_depth=3,
         learning_rate=0.05,
         subsample=0.8,
         colsample_bytree=0.8,
         reg_lambda=1.0,
-        eval_metric="logloss",
-        early_stopping_rounds=30,
         random_state=42,
     )
-    model.fit(X_fit, y_fit, eval_set=[(X_val, y_val)], verbose=False)
-    print(f"  (early stopping: best iteration {model.best_iteration} of 300)")
+    probe = XGBClassifier(n_estimators=300, eval_metric="logloss",
+                          early_stopping_rounds=30, **params)
+    probe.fit(X_fit, y_fit, eval_set=[(X_val, y_val)], verbose=False)
+    best_n = probe.best_iteration
+    print(f"  (early stopping on a validation slice picked {best_n} rounds; "
+          f"refitting on the full training set with that round count)")
+
+    model = XGBClassifier(n_estimators=best_n, **params)
+    model.fit(X_tr, y_tr)
     return model
 
 
