@@ -45,9 +45,9 @@ python -m src.id_crosswalk --out data/statcast/id_crosswalk.csv
 #    the post-rule-change seasons, 2023-2025)
 python -m src.features --out data/sample/features_2023_2025.csv
 
-# 4. Train + evaluate the logistic regression baseline (temporal split:
-#    train on seasons before --test-season, test on that season)
-python -m src.train --features data/sample/features_2023_2025.csv --test-season 2025
+# 4. Train + evaluate the logistic regression baseline (date-based split:
+#    train on the earliest dates, test on the latest --test-frac of rows)
+python -m src.train --features data/sample/features_2023_2025.csv --test-frac 0.2
 
 # Validate the parser against known facts
 python -m pytest tests/ -q
@@ -66,7 +66,7 @@ leakage checks.
 | `src/statcast_pull.py` | Pulls Statcast skill data (sprint speed, pop time) per season. |
 | `src/id_crosswalk.py` | Builds the Retrosheet id <-> MLBAM id crosswalk (via Chadwick register) needed to join Statcast onto Retrosheet rows. |
 | `src/features.py` | Combines the post-rule-change seasons (default 2023-2025) into one leakage-safe, Statcast-joined feature table (running runner/pitcher/catcher priors from prior attempts only). |
-| `src/train.py` | Baseline logistic-regression success-probability model, temporally split (train on earlier seasons, test on the held-out latest one). |
+| `src/train.py` | Baseline logistic-regression success-probability model, date-based split (train on the earliest dates, test on the latest `--test-frac`) so no future data ever leaks into training. |
 | `notebooks/eda.ipynb` | Exploratory checks + validation for every step above. |
 | `tests/` | Regression tests (leaderboard, success rate). |
 | `data/retrosheet_2023/` | Bundled raw 2023 event + roster files. |
@@ -100,8 +100,9 @@ Checked in `notebooks/eda.ipynb` against known facts (all pass):
 
 ## Baseline model
 
-Logistic regression, trained on 2023-2024 and tested on the held-out 2025
-season (`python -m src.train`):
+Logistic regression, date-based split — trained on 2023/03/30-2025/06/01,
+tested on the chronologically last 20% of rows (2025/06/01-2025/11/01)
+(`python -m src.train`):
 
 - **AUC 0.597** (up from ~0.58 with Retrosheet-only features) — a real but
   modest lift; gradient boosting + feature interactions is the next lever,
