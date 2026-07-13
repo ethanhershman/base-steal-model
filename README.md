@@ -149,7 +149,12 @@ pickoff-attempt rate aren't cleanly available from public Statcast
 leaderboards without a much deeper pitch-level pull — see ROADMAP.md.
 Runner-on-1st during a steal of 3rd, and any base-occupancy effect on
 steals of home, were checked and found to have no meaningful/reliable
-signal (see `notebooks/eda.ipynb`, section 10.6) — left out.
+signal (see `notebooks/eda.ipynb`, section 10.6) — left out. Day/night has
+no effect at all (78.98% vs. 78.99%). In-game attempt count against the
+same pitcher/catcher and a leakage-safe park success rate both showed real
+univariate effects, but an ablation showed neither improves the full
+model (log loss/AUC flat-to-worse in every configuration) — implemented,
+tested, and reverted; see `notebooks/eda.ipynb`, section 10.7.
 
 ## Models
 
