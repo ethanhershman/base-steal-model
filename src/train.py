@@ -1,19 +1,24 @@
 """
-Baseline steal-success probability model.
+Steal-success probability models: logistic regression baseline + XGBoost.
 
-Logistic regression: interpretable, naturally outputs a probability, and a
-good gut-check that the model is learning real baseball (faster runners and
-lefty pitchers should visibly move the odds) before reaching for gradient
-boosting. Evaluated with the metrics that matter for a decision model: log
-loss, Brier score, AUC, and a calibration table.
+Logistic regression is interpretable and a good gut-check that the model is
+learning real baseball (faster runners and lefty pitchers should visibly
+move the odds). Gradient boosting (XGBoost) almost always beats it on
+tabular data like this and captures interactions a linear model can't --
+e.g. a fast runner against a slow lefty with a weak-armed catcher compounds
+in a way logistic regression misses. Per ROADMAP.md, XGBoost becomes the
+production model once it's shown to beat the baseline on log loss/Brier.
 
-Split TEMPORALLY (train on the earlier X% of dates, test on the later
-Y%) rather than randomly -- a random split would let the model train on
-rows that happened, in real life, after some of the rows it's being
-tested on. features.py already writes rows in chronological order (date,
-game_id, inning, outs), so a date-based cutoff is just "first N% of rows
-train, rest test" -- no future data ever ends up in training. See
-ROADMAP.md, "Validate across time".
+Both are evaluated identically: log loss, Brier score, AUC, and a
+calibration table.
+
+Split TEMPORALLY (train on the earlier X% of dates, test on the later Y%)
+rather than randomly -- a random split would let the model train on rows
+that happened, in real life, after some of the rows it's being tested on.
+features.py already writes rows in chronological order (date, game_id,
+inning, outs), so a date-based cutoff is just "first N% of rows train,
+rest test" -- no future data ever ends up in training. See ROADMAP.md,
+"Validate across time".
 
     python -m src.train --features data/sample/features_2023_2025.csv
 """
@@ -42,17 +47,84 @@ def calibration_table(y_true, p, n_bins=10):
     )
 
 
+def fit_logistic(X_tr, y_tr):
+    from sklearn.linear_model import LogisticRegression
+
+    model = LogisticRegression(max_iter=1000)
+    model.fit(X_tr, y_tr)
+    return model
+
+
+def fit_xgboost(X_tr, y_tr, val_frac=0.15):
+    from xgboost import XGBClassifier
+
+    # Carve a validation slice off the END of the (already chronological)
+    # training set for early stopping. This still never touches the test
+    # set -- it just stops adding trees once held-out log loss stops
+    # improving, so the model doesn't overfit the noisy per-attempt outcome.
+    val_idx = int(len(X_tr) * (1 - val_frac))
+    X_fit, X_val = X_tr.iloc[:val_idx], X_tr.iloc[val_idx:]
+    y_fit, y_val = y_tr.iloc[:val_idx], y_tr.iloc[val_idx:]
+
+    model = XGBClassifier(
+        n_estimators=300,
+        max_depth=3,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_lambda=1.0,
+        eval_metric="logloss",
+        early_stopping_rounds=30,
+        random_state=42,
+    )
+    model.fit(X_fit, y_fit, eval_set=[(X_val, y_val)], verbose=False)
+    print(f"  (early stopping: best iteration {model.best_iteration} of 300)")
+    return model
+
+
+def feature_ranking(model, model_name):
+    if model_name == "logistic":
+        return sorted(zip(NUMERIC, model.coef_[0]), key=lambda kv: -abs(kv[1]))
+    return sorted(zip(NUMERIC, model.feature_importances_), key=lambda kv: -kv[1])
+
+
+def evaluate(name, model, X_te, y_te):
+    from sklearn.metrics import log_loss, brier_score_loss, roc_auc_score
+
+    p = model.predict_proba(X_te)[:, 1]
+    metrics = {
+        "log_loss": log_loss(y_te, p),
+        "brier": brier_score_loss(y_te, p),
+        "auc": roc_auc_score(y_te, p),
+    }
+
+    print(f"\n{name}")
+    print(f"  log loss : {metrics['log_loss']:.4f}")
+    print(f"  brier    : {metrics['brier']:.4f}")
+    print(f"  auc      : {metrics['auc']:.4f}")
+
+    label = "coefficients" if name.startswith("Logistic") else "feature importance (gain)"
+    print(f"\n  {label}, ranked:")
+    for feat, val in feature_ranking(model, "logistic" if name.startswith("Logistic") else "xgboost"):
+        print(f"    {feat:28s} {val:+.4f}" if name.startswith("Logistic") else f"    {feat:28s} {val:.4f}")
+
+    print("\n  calibration (predicted vs. actual success rate by decile):")
+    print(calibration_table(y_te, p).to_string(float_format=lambda v: f"{v:.3f}"))
+
+    return metrics
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--features", default="data/sample/features_2023_2025.csv")
     ap.add_argument("--test-frac", type=float, default=0.2,
                     help="fraction of the chronologically LATEST rows held "
                          "out as the test set")
+    ap.add_argument("--model", choices=["logistic", "xgboost", "both"],
+                    default="both")
     args = ap.parse_args()
 
     import pandas as pd
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.metrics import log_loss, brier_score_loss, roc_auc_score
 
     df = pd.read_csv(args.features)
 
@@ -70,29 +142,29 @@ def main():
     X_tr, y_tr = train[NUMERIC].fillna(0.0), train["success"].astype(int)
     X_te, y_te = test[NUMERIC].fillna(0.0), test["success"].astype(int)
 
-    model = LogisticRegression(max_iter=1000)
-    model.fit(X_tr, y_tr)
-    p = model.predict_proba(X_te)[:, 1]
-
-    print(f"Baseline logistic regression (date-based split, "
-          f"test = last {args.test_frac:.0%} of rows)")
+    print(f"Date-based split (test = last {args.test_frac:.0%} of rows)")
     print(f"  train dates: {train['date'].min()} to {train['date'].max()}")
     print(f"  test dates : {test['date'].min()} to {test['date'].max()}")
     print(f"  train rows: {len(X_tr)}   test rows: {len(X_te)}")
-    print(f"  log loss : {log_loss(y_te, p):.4f}")
-    print(f"  brier    : {brier_score_loss(y_te, p):.4f}")
-    print(f"  auc      : {roc_auc_score(y_te, p):.4f}")
     base_rate = y_te.mean()
     print(f"  base rate: {base_rate:.4f} (predict-the-mean brier = "
           f"{base_rate * (1 - base_rate):.4f})")
 
-    print("\n  coefficient sanity check (sign should make baseball sense):")
-    for name, coef in sorted(zip(NUMERIC, model.coef_[0]),
-                             key=lambda kv: -abs(kv[1])):
-        print(f"    {name:28s} {coef:+.3f}")
+    results = {}
+    if args.model in ("logistic", "both"):
+        model = fit_logistic(X_tr, y_tr)
+        results["Logistic regression"] = evaluate("Logistic regression", model, X_te, y_te)
+    if args.model in ("xgboost", "both"):
+        model = fit_xgboost(X_tr, y_tr)
+        results["XGBoost"] = evaluate("XGBoost", model, X_te, y_te)
 
-    print("\n  calibration (predicted vs. actual success rate by decile):")
-    print(calibration_table(y_te, p).to_string(float_format=lambda v: f"{v:.3f}"))
+    if len(results) > 1:
+        print("\nComparison (lower log loss/brier is better, higher AUC is better):")
+        print(f"  {'model':22s} {'log loss':>10s} {'brier':>10s} {'auc':>10s}")
+        for name, m in results.items():
+            print(f"  {name:22s} {m['log_loss']:10.4f} {m['brier']:10.4f} {m['auc']:10.4f}")
+        winner = min(results, key=lambda k: results[k]["log_loss"])
+        print(f"\n  best on log loss: {winner}")
 
 
 if __name__ == "__main__":

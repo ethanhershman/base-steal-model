@@ -12,9 +12,9 @@ Two connected pieces (see [`ROADMAP.md`](ROADMAP.md) for the full design):
 
 This repo has the data foundation done — five parsed seasons (2021-2025),
 Statcast skill data joined on via an id crosswalk, and a leakage-safe
-combined feature table — plus a first baseline model (logistic regression,
-temporally validated). The decision layer (see [`ROADMAP.md`](ROADMAP.md))
-and a stronger model (gradient boosting) come next.
+combined feature table — plus two trained success-probability models
+(logistic regression baseline + XGBoost), both temporally validated. The
+decision layer (see [`ROADMAP.md`](ROADMAP.md)) comes next.
 
 **2021-2022 are parsed and kept for comparison, but excluded from the
 feature table / model by default.** MLB's 2023 rule changes (bigger bases,
@@ -45,8 +45,9 @@ python -m src.id_crosswalk --out data/statcast/id_crosswalk.csv
 #    the post-rule-change seasons, 2023-2025)
 python -m src.features --out data/sample/features_2023_2025.csv
 
-# 4. Train + evaluate the logistic regression baseline (date-based split:
-#    train on the earliest dates, test on the latest --test-frac of rows)
+# 4. Train + evaluate both models (date-based split: train on the earliest
+#    dates, test on the latest --test-frac of rows). --model logistic or
+#    --model xgboost to run just one.
 python -m src.train --features data/sample/features_2023_2025.csv --test-frac 0.2
 
 # Validate the parser against known facts
@@ -66,7 +67,7 @@ leakage checks.
 | `src/statcast_pull.py` | Pulls Statcast skill data (sprint speed, pop time) per season. |
 | `src/id_crosswalk.py` | Builds the Retrosheet id <-> MLBAM id crosswalk (via Chadwick register) needed to join Statcast onto Retrosheet rows. |
 | `src/features.py` | Combines the post-rule-change seasons (default 2023-2025) into one leakage-safe, Statcast-joined feature table (running runner/pitcher/catcher priors from prior attempts only). |
-| `src/train.py` | Baseline logistic-regression success-probability model, date-based split (train on the earliest dates, test on the latest `--test-frac`) so no future data ever leaks into training. |
+| `src/train.py` | Trains + evaluates the logistic-regression baseline and an XGBoost model (`--model logistic\|xgboost\|both`), date-based split (train on the earliest dates, test on the latest `--test-frac`) so no future data ever leaks into training. |
 | `notebooks/eda.ipynb` | Exploratory checks + validation for every step above. |
 | `tests/` | Regression tests (leaderboard, success rate). |
 | `data/retrosheet_2023/` | Bundled raw 2023 event + roster files. |
@@ -98,18 +99,27 @@ Checked in `notebooks/eda.ipynb` against known facts (all pass):
   (78.9%) — the known "lefties hold runners better" effect shows up in
   the data.
 
-## Baseline model
+## Models
 
-Logistic regression, date-based split — trained on 2023/03/30-2025/06/01,
-tested on the chronologically last 20% of rows (2025/06/01-2025/11/01)
+Date-based split — trained on 2023/03/30-2025/06/01, tested on the
+chronologically last 20% of rows (2025/06/01-2025/11/01)
 (`python -m src.train`):
 
-- **AUC 0.597** (up from ~0.58 with Retrosheet-only features) — a real but
-  modest lift; gradient boosting + feature interactions is the next lever,
-  not more raw features.
-- Calibration tracks the diagonal closely across deciles.
-- Every coefficient sign matches baseball intuition: higher catcher pop
-  time (slower catcher) raises success odds, LHP and higher catcher
+| model | log loss | brier | AUC |
+|---|---|---|---|
+| Logistic regression | 0.5201 | 0.1696 | 0.5974 |
+| XGBoost (early-stopped) | **0.5195** | **0.1692** | 0.5921 |
+
+- XGBoost edges out logistic on log loss and Brier (the metrics that
+  matter most for a decision model per `ROADMAP.md`) with early stopping
+  on an internal validation slice of the training set — a real but modest
+  win, consistent with everything else we've seen: steal outcomes are
+  inherently noisy and 16 features only carry so much signal. AUC is
+  slightly lower for XGBoost, so neither model dominates the other outright.
+- Both AUCs are up from ~0.58 with Retrosheet-only (no Statcast) features.
+- Calibration tracks the diagonal closely across deciles for both models.
+- Logistic coefficient signs all match baseball intuition: higher catcher
+  pop time (slower catcher) raises success odds, LHP and higher catcher
   caught-stealing rate lower them, higher runner/pitcher prior success
   rate raises them.
 

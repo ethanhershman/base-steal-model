@@ -5,7 +5,5 @@ pybaseball        # Statcast pulls + Chadwick id crosswalk (works off-sandbox)
 pytest            # test suite
 jupyter           # notebooks/eda.ipynb
 matplotlib        # EDA plots
-scikit-learn      # baseline logistic regression model
-# Optional, for the upgraded model (see ROADMAP.md):
-# xgboost
-# lightgbm
+scikit-learn      # baseline logistic regression model + eval metrics
+xgboost           # gradient-boosted production model
