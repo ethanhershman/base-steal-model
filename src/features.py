@@ -1,8 +1,8 @@
 """
 Leakage-safe, multi-season feature table for the steal-success model.
 
-Combines every parsed steal-attempt file in `data/sample/steals_*.csv`
-into one chronologically-ordered table, then:
+Combines the parsed steal-attempt files for the given `--seasons` into one
+chronologically-ordered table, then:
 
   * computes running runner/pitcher/catcher success-rate priors from
     PRIOR attempts only (across season boundaries, not just within one
@@ -12,13 +12,20 @@ into one chronologically-ordered table, then:
     `src/id_crosswalk.py`. Rows for players with no Statcast row get a
     missing-value flag rather than a guessed number.
 
-    python -m src.features --out data/sample/features_2021_2024.csv
+Default seasons are 2023-2025 only. 2021-2022 are excluded: MLB's 2023
+rule changes (bigger bases, limited pickoff attempts) measurably changed
+stolen-base success rates (see notebooks/eda.ipynb, section 10), so
+pre-2023 attempts aren't drawn from the same underlying distribution the
+model needs to predict. steals_2021.csv / steals_2022.csv are still parsed
+and kept on disk for that historical comparison, just not fed into
+training.
+
+    python -m src.features --out data/sample/features_2023_2025.csv
 """
 from __future__ import annotations
 
 import argparse
 import csv
-import glob
 import os
 from collections import defaultdict
 
@@ -148,12 +155,19 @@ def build_features(steals_paths: list, statcast_dir: str) -> list:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--steals-glob", default="data/sample/steals_*.csv")
+    ap.add_argument("--seasons", type=int, nargs="+", default=[2023, 2024, 2025],
+                    help="post rule-change seasons to include (2021-2022 predate "
+                         "the bigger-base/pickoff-limit rules and are excluded "
+                         "by default)")
+    ap.add_argument("--steals-dir", default="data/sample")
     ap.add_argument("--statcast-dir", default="data/statcast")
-    ap.add_argument("--out", default="data/sample/features_2021_2024.csv")
+    ap.add_argument("--out", default="data/sample/features_2023_2025.csv")
     args = ap.parse_args()
 
-    paths = sorted(glob.glob(args.steals_glob))
+    paths = [os.path.join(args.steals_dir, f"steals_{y}.csv") for y in args.seasons]
+    missing = [p for p in paths if not os.path.exists(p)]
+    if missing:
+        raise SystemExit(f"missing parsed season file(s): {missing}")
     feats = build_features(paths, args.statcast_dir)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", newline="") as fh:

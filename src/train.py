@@ -13,7 +13,7 @@ runner/pitcher/catcher priors from games that happened after the ones it's
 being tested on, which isn't available in real use. See ROADMAP.md,
 "Validate across time".
 
-    python -m src.train --features data/sample/features_2021_2024.csv
+    python -m src.train --features data/sample/features_2023_2025.csv
 """
 from __future__ import annotations
 
@@ -42,8 +42,8 @@ def calibration_table(y_true, p, n_bins=10):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--features", default="data/sample/features_2021_2024.csv")
-    ap.add_argument("--test-season", type=int, default=2024,
+    ap.add_argument("--features", default="data/sample/features_2023_2025.csv")
+    ap.add_argument("--test-season", type=int, default=2025,
                     help="held-out season; everything earlier is training data")
     args = ap.parse_args()
 
