@@ -123,6 +123,29 @@ chronologically last 20% of rows (2025/06/01-2025/11/01)
   caught-stealing rate lower them, higher runner/pitcher prior success
   rate raises them.
 
+### Where the model is wrong (`python -m src.train --diagnostics`)
+
+AUC ~0.6 looks weak in isolation, so it's worth seeing *why*. A standard
+0.5 probability threshold is meaningless here — steal success is a ~78%
+base-rate event and every predicted probability lands between ~0.5 and
+~0.93, so thresholding at 0.5 predicts "success" for 100% of attempts
+(TP=2109, FP=605, **TN=0**, specificity=0). At a more sensible threshold
+(the test base rate, ~0.78) the model is informative but weak: precision
+~0.81, recall ~0.62, specificity ~0.51.
+
+Looking at the most confident misses explains the ceiling: false
+positives (predicted high, actually caught) are runners with *great* stats
+— 28-30 ft/s sprint speed, 0.75-0.94 prior success rate — who still got
+thrown out; false negatives (predicted low, actually safe) are mediocre
+runners (24-28 ft/s, weaker priors) who still made it. The model has
+learned real signal (the coefficient/importance directions are all
+sensible), but season-level aggregate skill stats can't see the thing that
+actually decides most individual attempts: exact lead distance, jump
+timing, pitch type/location, and throw accuracy on that specific play.
+None of that is in the public data (see "Known limitations" below), so
+this AUC is closer to the ceiling for this feature set than a sign of a
+broken model.
+
 ## Known limitations
 
 - ~0.6% of attempts sit in same-play multi-steal snapshots (documented, benign).

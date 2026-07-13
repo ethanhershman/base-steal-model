@@ -88,7 +88,56 @@ def feature_ranking(model, model_name):
     return sorted(zip(NUMERIC, model.feature_importances_), key=lambda kv: -kv[1])
 
 
-def evaluate(name, model, X_te, y_te):
+def confusion_at(y_true, p, threshold):
+    from sklearn.metrics import confusion_matrix
+
+    pred = (p >= threshold).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true, pred).ravel()
+    precision = tp / (tp + fp) if (tp + fp) else float("nan")
+    recall = tp / (tp + fn) if (tp + fn) else float("nan")
+    specificity = tn / (tn + fp) if (tn + fp) else float("nan")
+    return {"tp": tp, "fp": fp, "tn": tn, "fn": fn,
+            "precision": precision, "recall": recall, "specificity": specificity}
+
+
+def print_diagnostics(test_df, y_te, p):
+    import pandas as pd
+
+    base_rate = y_te.mean()
+    print("\n  confusion matrix at two thresholds:")
+    print("  ('success' is the positive class; steal success is a high "
+          "base-rate event, so 0.5 is not a meaningful cutoff here.)")
+    for label, thresh in (("0.5 (standard)", 0.5), (f"{base_rate:.3f} (test base rate)", base_rate)):
+        c = confusion_at(y_te, p, thresh)
+        print(f"    threshold {label}:")
+        print(f"      TP={c['tp']:4d}  FP={c['fp']:4d}  TN={c['tn']:4d}  FN={c['fn']:4d}  "
+              f"precision={c['precision']:.3f}  recall={c['recall']:.3f}  "
+              f"specificity={c['specificity']:.3f}")
+
+    scored = test_df.copy()
+    scored["p"] = p
+    id_cols = ["runner_id", "pitcher_id", "catcher_id"]
+    skill_cols = ["runner_sprint_speed", "catcher_pop_time",
+                 "runner_prior_sr", "pitcher_prior_sr_allowed"]
+    cols = id_cols + ["p", "success"] + skill_cols
+
+    print("\n  most confident WRONG -- predicted high success, actually CAUGHT:")
+    print(scored[scored["success"] == 0].sort_values("p", ascending=False)
+          .head(5)[cols].to_string(index=False, float_format=lambda v: f"{v:.3f}"))
+
+    print("\n  most confident WRONG -- predicted low success, actually SAFE:")
+    print(scored[scored["success"] == 1].sort_values("p")
+          .head(5)[cols].to_string(index=False, float_format=lambda v: f"{v:.3f}"))
+
+    print("\n  reading: these misses tend to have GOOD skill numbers (fast "
+          "runner, high prior success rate) and still get caught, or "
+          "mediocre numbers and still succeed -- i.e. the model is picking "
+          "up real signal, but the actual outcome is decided by things this "
+          "feature set can't see (exact lead/jump, pitch type, throw "
+          "accuracy on that specific play). See ROADMAP.md, honest limitations.")
+
+
+def evaluate(name, model, X_te, y_te, test_df=None, diagnostics=False):
     from sklearn.metrics import log_loss, brier_score_loss, roc_auc_score
 
     p = model.predict_proba(X_te)[:, 1]
@@ -111,6 +160,9 @@ def evaluate(name, model, X_te, y_te):
     print("\n  calibration (predicted vs. actual success rate by decile):")
     print(calibration_table(y_te, p).to_string(float_format=lambda v: f"{v:.3f}"))
 
+    if diagnostics:
+        print_diagnostics(test_df, y_te, p)
+
     return metrics
 
 
@@ -122,6 +174,10 @@ def main():
                          "out as the test set")
     ap.add_argument("--model", choices=["logistic", "xgboost", "both"],
                     default="both")
+    ap.add_argument("--diagnostics", action="store_true",
+                    help="print a confusion matrix and the most confident "
+                         "wrong predictions, to see WHERE the model is off "
+                         "rather than just how often")
     args = ap.parse_args()
 
     import pandas as pd
@@ -153,10 +209,12 @@ def main():
     results = {}
     if args.model in ("logistic", "both"):
         model = fit_logistic(X_tr, y_tr)
-        results["Logistic regression"] = evaluate("Logistic regression", model, X_te, y_te)
+        results["Logistic regression"] = evaluate(
+            "Logistic regression", model, X_te, y_te, test, args.diagnostics)
     if args.model in ("xgboost", "both"):
         model = fit_xgboost(X_tr, y_tr)
-        results["XGBoost"] = evaluate("XGBoost", model, X_te, y_te)
+        results["XGBoost"] = evaluate(
+            "XGBoost", model, X_te, y_te, test, args.diagnostics)
 
     if len(results) > 1:
         print("\nComparison (lower log loss/brier is better, higher AUC is better):")
