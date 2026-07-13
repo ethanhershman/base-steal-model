@@ -26,6 +26,11 @@ from the same distribution the model needs to predict.
 
 ```bash
 pip install -r requirements.txt
+# If you have multiple Python installs (e.g. Anaconda + a separate
+# framework Python), install into whichever one your Jupyter kernel
+# actually uses -- `jupyter kernelspec list` shows its path -- otherwise
+# notebook cells that import sklearn/xgboost will fail with a
+# ModuleNotFoundError even though `pip install` succeeded elsewhere.
 
 # 1. Parse steal attempts from the bundled Retrosheet data (2021-2025;
 #    2023 ships in the repo, fetch the others first if you don't have them)
@@ -55,8 +60,9 @@ python -m pytest tests/ -q
 ```
 
 See `notebooks/eda.ipynb` for the full validation trail: parser sanity
-checks, per-season leaderboards, the Statcast join, and the feature table's
-leakage checks.
+checks, per-season leaderboards, the Statcast join, the feature table's
+leakage checks, and model diagnostics (confusion matrices, calibration,
+most-confident-wrong predictions).
 
 ## What's here
 
