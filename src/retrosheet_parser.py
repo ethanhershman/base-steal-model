@@ -544,6 +544,101 @@ def iter_plays(data_dir: str):
             yield r
 
 
+def iter_plays_for_win_prob(data_dir: str):
+    """Yield one record per play with enough context to build an empirical
+    win-probability table: the base-out state and batting-team score margin
+    AT the play, plus whether the batting team went on to win the game.
+
+    Unlike iter_plays (which only needs the score at the END OF THE
+    HALF-INNING, so it buffers per half-inning), this needs the FINAL score
+    of the whole game, so it buffers every play for an entire game and only
+    resolves the winner once the game ends (next 'id' tag or end of file).
+
+    Also yields a boundary record (outs=3, base_code='END') at every
+    half-inning transition, with the score margin the JUST-FINISHED batting
+    team ended their turn at. This is what a caught-stealing-for-the-3rd-out
+    needs: not "0 more runs this inning" (RE24's answer) but "given this
+    team's turn just ended at this exact score, in this exact inning/half,
+    did they go on to win?" -- estimated directly from real half-innings
+    that ended at that state, which handles walk-off-loss endings correctly
+    for free (no algebraic "flip to the opponent" step that could get a
+    sudden-death edge case wrong).
+
+    Yields dicts: {inning, half, outs, base_code, score_diff, won, game_id}.
+    A tied final score (extremely rare -- suspended/rain-shortened games)
+    is skipped rather than guessed at.
+    """
+    files = sorted(glob.glob(os.path.join(data_dir, "*.EV*")))
+    for path in files:
+        gs = GameState()
+        buffer = []  # (inning, half, outs, base_code, score_diff)
+        half_key = None
+
+        def flush():
+            final_visitor, final_home = gs.score
+            if final_visitor == final_home:
+                return  # tied final score -- skip, don't guess a winner
+            for inning, half, outs, bc, score_diff in buffer:
+                won = int((half == 1 and final_home > final_visitor) or
+                          (half == 0 and final_visitor > final_home))
+                recs.append({
+                    "inning": inning, "half": half, "outs": outs,
+                    "base_code": bc, "score_diff": score_diff, "won": won,
+                })
+
+        recs = []
+        with open(path, newline="") as fh:
+            for rec in csv.reader(fh):
+                if not rec:
+                    continue
+                tag = rec[0]
+                if tag == "id":
+                    if buffer:
+                        flush()
+                        buffer = []
+                    gs = GameState(game_id=rec[1])
+                    half_key = None
+                elif tag == "radj":
+                    gs.pending_radj.append((rec[1], int(rec[2])))
+                elif tag in ("start", "sub"):
+                    pass
+                elif tag == "play":
+                    inning, half, batter = int(rec[1]), int(rec[2]), rec[3]
+                    event = rec[6] if len(rec) > 6 else ""
+                    key = (inning, half)
+                    if half_key is not None and key != half_key:
+                        # half-inning just transitioned -- record the boundary
+                        # at the score margin the OLD half's batting team
+                        # finished at (a caught stealing never itself scores
+                        # a run, so this is exactly the state a 3rd out via
+                        # caught stealing would land in).
+                        old_inning, old_half = half_key
+                        old_defense = 1 - old_half
+                        buffer.append((old_inning, old_half, 3, "END",
+                                       gs.score[old_half] - gs.score[old_defense]))
+                    half_key = key
+                    gs.new_half_inning(inning, half)
+                    if gs.pending_radj:
+                        for pid, base in gs.pending_radj:
+                            gs.bases[base] = pid
+                        gs.pending_radj = []
+                    if event.strip() not in ("NP", ""):
+                        defense = 1 - half
+                        buffer.append((inning, half, gs.outs, base_code(gs.bases),
+                                       gs.score[half] - gs.score[defense]))
+                    update_state(event, gs, batter)
+        if half_key is not None:
+            old_inning, old_half = half_key
+            old_defense = 1 - old_half
+            buffer.append((old_inning, old_half, 3, "END",
+                           gs.score[old_half] - gs.score[old_defense]))
+        if buffer:
+            flush()
+        for r in recs:
+            r["game_id"] = gs.game_id
+            yield r
+
+
 def parse_season(data_dir: str, collect_batting: bool = False):
     players = load_rosters(data_dir)
     rows: list = []

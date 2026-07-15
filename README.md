@@ -12,11 +12,14 @@ Two connected pieces (see [`ROADMAP.md`](ROADMAP.md) for the full design):
 
 Both pieces are now in place: five parsed seasons (2021-2025), a leakage-safe
 Statcast-joined feature table, two trained success-probability models
-(logistic regression baseline + XGBoost), and a real RE24 decision layer
-(`src/run_expectancy.py` + `src/demo_decision.py`) that combines the trained
-model's predicted probability with the situational break-even rate to make a
-GO/HOLD call. Backtesting the full system against history (see `ROADMAP.md`,
-"Step 5") is the natural next step.
+(logistic regression baseline + XGBoost), and a real decision layer
+(`src/run_expectancy.py` + `src/win_probability.py` + `src/demo_decision.py`)
+that combines the trained model's predicted probability with a situational
+break-even rate to make a GO/HOLD call — RE24 for most of the game, win
+probability for high-leverage late/close situations, where RE24's
+run-based math badly understates the cost of a caught stealing that ends a
+trailing team's last chance. Backtesting the full system against history
+(see `ROADMAP.md`, "Step 5") is the natural next step.
 
 **2021-2022 are parsed and kept for comparison, but excluded from the
 feature table / model by default.** MLB's 2023 rule changes (bigger bases,
@@ -65,13 +68,15 @@ python -m src.features --out data/sample/features_2023_2025.csv
 #    --model xgboost to run just one.
 python -m src.train --features data/sample/features_2023_2025.csv --test-frac 0.2
 
-# 5. Build the RE24 table + break-even math, then see the decision layer
+# 5. Build the RE24 + win-probability tables, then see the decision layer
 #    make real GO/HOLD calls on real held-out attempts using the actual
-#    trained model (not hardcoded example probabilities).
+#    trained model (not hardcoded example probabilities) -- RE24 for most
+#    situations, win probability for high-leverage late/close ones.
 python -m src.run_expectancy --out data/sample/re24_2023_2025.csv
+python -m src.win_probability
 python -m src.demo_decision
 
-# Validate the parser + RE24 table against known facts
+# Validate the parser + decision layer against known facts
 python -m pytest tests/ -q
 ```
 
@@ -94,9 +99,10 @@ real held-out attempts).
 | `src/features.py` | Combines the post-rule-change seasons (default 2023-2025) into one leakage-safe, Statcast-joined feature table (running runner/pitcher/catcher/batter priors from prior attempts only). |
 | `src/train.py` | Trains + evaluates the logistic-regression baseline and an XGBoost model (`--model logistic\|xgboost\|both`), date-based split (train on the earliest dates, test on the latest `--test-frac`) so no future data ever leaks into training. |
 | `src/run_expectancy.py` | Builds the RE24 table from Retrosheet play-by-play and computes situational steal break-even rates (`cost / (reward + cost)`). |
-| `src/demo_decision.py` | Fits the real trained model, then makes GO/HOLD calls on real held-out attempts by comparing its predicted probability against the RE24 break-even for that exact situation. |
+| `src/win_probability.py` | Empirical win-probability table (inning/half/outs/bases/score margin) and break-even math for high-leverage late/close situations, where RE24's run-based math is the wrong currency. |
+| `src/demo_decision.py` | Fits the real trained model, then makes GO/HOLD calls on real held-out attempts by comparing its predicted probability against the RE24 (or win-probability, if high-leverage) break-even for that exact situation. |
 | `notebooks/eda.ipynb` | Exploratory checks + validation for every step above. |
-| `tests/` | Regression tests (leaderboard, success rate, RE24 anchors). |
+| `tests/` | Regression tests (leaderboard, success rate, RE24 anchors, win-probability sanity checks). |
 | `data/retrosheet_2023/` | Bundled raw 2023 event + roster files. |
 | `data/sample/` | Generated sample outputs (steal tables + combined feature table). |
 
@@ -263,16 +269,55 @@ runner also on 3rd (getting caught costs a lot more when it also risks that
 runner) and is lower with 2 outs (getting caught just ends the inning either
 way, so there's less left to lose).
 
+### Win probability for late/close games
+
+RE24 optimizes for total runs, which is the wrong goal once a game is close
+to over — a run to tie is worth far more than a run in a blowout, and "getting
+caught just ends the inning" badly understates the cost when that inning is
+a trailing team's last chance. `src/win_probability.py` builds an empirical
+win-probability table the same way (real historical plays, not a formula),
+but keyed on inning/half/outs/bases/score margin, with `won` = whether the
+batting team went on to win the whole game. `src/demo_decision.py` swaps to
+this table automatically for high-leverage situations (7th inning or later,
+score within 3 runs — `is_high_leverage()`).
+
+Two things worth knowing about how it's built:
+- **A caught stealing that makes the 3rd out isn't priced via RE24-style
+  algebra** ("flip to the opponent's perspective"). Instead the table
+  separately tracks every real historical moment a half-inning actually
+  ended, at that exact score/inning — so a trailing team's last-out loss
+  falls out of the data directly, including one case handled as a logical
+  certainty rather than an empirical estimate: if the home team's half-inning
+  ends in the 9th or later while they're still behind, the game is over
+  (P(win)=0%, by the rules of baseball, not a small sample).
+- **Every answer reports the sample size behind it**, with a fallback chain
+  that always preserves the exact inning/half (never blending a 9th-inning
+  question with 3rd-inning data) before widening anything else. Extreme
+  corners (e.g. a big lead late with runners on) are honestly sparse even
+  across 3 seasons and get flagged low-confidence rather than presented with
+  false precision.
+
+**Concretely, down 1 with 2 outs in the bottom of the 9th** (runner on 1st,
+steal of 2nd): win-probability break-even is **45.6%** — dramatically lower
+than RE24's ~71-74% for the same base-out situation. Tied in that same spot
+is the opposite: break-even is **90.2%**, higher than the RE24 baseline,
+because a caught stealing there doesn't lose the game, it just sends it to
+extras, so there's more to protect. Down 2 sits in between (53.9%). None of
+this is hardcoded — it's what the data says once "value" means win
+probability instead of runs.
+
 `src/demo_decision.py` fits the real model (not hardcoded example
 probabilities) on the same train split `src/train.py` uses, then walks real
-**held-out** test-set attempts, comparing each one's predicted probability
-against its own situational break-even for a GO/HOLD call — and shows what
-actually happened next to it. This is illustrative, not a backtest: every
-row shown is an attempt that happened, so we can see whether GO calls would
-have paid off, but not what a HOLD call would have avoided. A real backtest
-(run the full held-out set, compare aggregate run value of the model's
-recommendations against what actually happened) is the natural next step —
-see ROADMAP.md, "Step 5."
+**held-out** test-set attempts — biased to include some high-leverage
+situations too, since a plain random sample is mostly innings 1-6 — comparing
+each one's predicted probability against its own situational break-even
+(RE24 or win probability, whichever applies) for a GO/HOLD call, and shows
+what actually happened next to it. This is illustrative, not a backtest:
+every row shown is an attempt that happened, so we can see whether GO calls
+would have paid off, but not what a HOLD call would have avoided. A real
+backtest (run the full held-out set, compare aggregate run/win value of the
+model's recommendations against what actually happened) is the natural next
+step — see ROADMAP.md, "Step 5."
 
 ## Known limitations
 

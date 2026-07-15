@@ -197,6 +197,10 @@ def build_features(steals_paths: list, statcast_dir: str,
             # derived from it), but needed by src/run_expectancy.py to look
             # up the right RE24 cell for the decision layer.
             "base_code": _base_code(r),
+            # 0=visiting/top, 1=home/bottom -- also for the decision layer:
+            # win-probability break-even (src/win_probability.py) needs to
+            # know which team is batting, especially for walk-off dynamics.
+            "half": r["half"],
             # steal_of_second is the implicit baseline; third/home get their
             # own dummies since their success rates are wildly different
             # (2nd ~79%, 3rd ~82%, home ~42% -- see notebooks/eda.ipynb).
