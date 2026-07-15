@@ -8,11 +8,16 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.win_probability import (  # noqa: E402
-    build_win_prob, win_prob_lookup, win_prob_break_even, is_high_leverage,
+    build_win_prob, win_prob_lookup, win_prob_break_even, is_high_leverage, MIN_CELL_N,
 )
 
-DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    "data", "retrosheet_2023")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA = os.path.join(REPO_ROOT, "data", "retrosheet_2023")
+# A few of the sparser late/close cells need more than one season to give a
+# STABLE (not just plausible-looking) answer -- see README.md, "Decision
+# layer" for the 3-season-vs-5-season sensitivity finding this came from.
+DATA_MULTI = [os.path.join(REPO_ROOT, "data", f"retrosheet_{y}")
+             for y in (2021, 2022, 2023, 2024, 2025)]
 
 
 def test_home_team_trailing_at_game_end_is_certain_loss():
@@ -35,16 +40,32 @@ def test_win_prob_monotonic_in_score():
 
 
 def test_break_even_lower_when_trailing_late_than_tied():
-    table = build_win_prob(DATA)
+    # Needs multiple seasons -- with only 2023, this specific comparison's
+    # cells are too sparse (even after clearing MIN_CELL_N) to reliably
+    # land in the right order; see the 3-season-vs-5-season sensitivity
+    # finding in README.md.
+    table = build_win_prob(DATA_MULTI)
+    hold_table = build_win_prob(DATA_MULTI, hold_only=True)
     # The core finding this module exists for: trailing late in the game,
     # a caught stealing that ends your turn is only as bad as "you lose" --
     # which isn't much worse than staying put and likely losing anyway --
     # so the bar for attempting should be lower than when the game is tied
     # (where getting caught costs you a shot at a walk-off without ending
     # your season, so you have more to protect).
-    be_trailing, _, _, _, _ = win_prob_break_even(table, 9, 1, 2, "1__", -1, "2")
-    be_tied, _, _, _, _ = win_prob_break_even(table, 9, 1, 2, "1__", 0, "2")
+    be_trailing, _, _, n_trailing, _ = win_prob_break_even(table, hold_table, 9, 1, 2, "1__", -1, "2")
+    be_tied, _, _, n_tied, _ = win_prob_break_even(table, hold_table, 9, 1, 2, "1__", 0, "2")
+    assert min(n_trailing, n_tied) >= MIN_CELL_N
     assert be_trailing < be_tied
+
+
+def test_hold_only_excludes_steal_attempts():
+    table = build_win_prob(DATA)
+    hold_table = build_win_prob(DATA, hold_only=True)
+    # hold_only should never have MORE observations in a cell than the
+    # unconditional table -- it's a strict subset (steal attempts removed).
+    for key, (rate, n) in hold_table.items():
+        all_rate, all_n = table[key]
+        assert n <= all_n
 
 
 def test_is_high_leverage():

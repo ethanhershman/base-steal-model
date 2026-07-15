@@ -11,6 +11,13 @@ the wrong goal once the game is close to over: a run to tie is worth far more
 than a run in a blowout, and a caught stealing that ends a trailing team's
 last at-bat is a certain loss, not "0 more runs this inning."
 
+The win-probability "current state" baseline is built with hold_only=True
+(win_probability.build_win_prob) -- it specifically excludes historical
+instances where a steal was actually attempted from that state, since the
+break-even question is "steal now vs. hold now," and blending in the
+minority of real steal attempts would answer a different question ("what
+usually happens here") instead.
+
 Fits on the same train split src/train.py uses (earliest 80% of dates), then
 walks a handful of real HELD-OUT test-set attempts spanning different
 situations -- so every recommendation shown here is the model's honest,
@@ -70,8 +77,9 @@ def main():
 
     print(f"Building RE24 from {', '.join(args.data_dirs)}...")
     re24 = build_re24(args.data_dirs)
-    print(f"Building win-probability table from {', '.join(args.wp_data_dirs)}...")
+    print(f"Building win-probability tables from {', '.join(args.wp_data_dirs)}...")
     wp_table = build_win_prob(args.wp_data_dirs)
+    wp_hold_table = build_win_prob(args.wp_data_dirs, hold_only=True)
 
     print(f"\nSteal-decision demo -- real model, real held-out attempts "
           f"({test['date'].min()} to {test['date'].max()})\n")
@@ -92,7 +100,8 @@ def main():
         p = row["p_model"]
 
         if is_high_leverage(inning, score_diff):
-            be, reward, cost, n, _ = win_prob_break_even(wp_table, inning, half, outs, bc, score_diff, target)
+            be, reward, cost, n, _ = win_prob_break_even(
+                wp_table, wp_hold_table, inning, half, outs, bc, score_diff, target)
             layer = f"WP(n={n}{'*' if n < MIN_CELL_N else ''})"
         else:
             if (bc, outs) not in re24:

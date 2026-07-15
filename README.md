@@ -285,7 +285,7 @@ batting team went on to win the whole game. `src/demo_decision.py` swaps to
 this table automatically for high-leverage situations (7th inning or later,
 score within 3 runs — `is_high_leverage()`).
 
-Three things worth knowing about how it's built:
+Four things worth knowing about how it's built:
 - **A caught stealing that makes the 3rd out isn't priced via RE24-style
   algebra** ("flip to the opponent's perspective"). Instead the table
   separately tracks every real historical moment a half-inning actually
@@ -304,39 +304,52 @@ Three things worth knowing about how it's built:
   by score/inning/outs/bases isn't affected by the 2023 steal-specific rule
   changes the way steal success rates are, so there's no reason to throw
   away 2021-2022 here — and the sparser late/close cells benefit a lot from
-  the extra data (checked directly: see below). 2021-2022 do share the
-  automatic extra-innings runner rule with 2023-2025 (in effect since 2020),
-  so extra-inning dynamics stay consistent; going back further would cross
-  that rule boundary and isn't done without deliberately checking for it.
+  the extra data. 2021-2022 do share the automatic extra-innings runner rule
+  with 2023-2025 (in effect since 2020), so extra-inning dynamics stay
+  consistent; going back further would cross that rule boundary and isn't
+  done without deliberately checking for it.
+- **The "current state" baseline excludes historical steal attempts.** The
+  break-even question is "steal now vs. hold now," so the pre-decision
+  baseline needs to specifically represent "hold" — not an average across
+  every real historical instance of that state, which would blend in the
+  ~11% of the time a steal actually was attempted next (that answers "what
+  usually happens here," a different question). `build_win_prob(...,
+  hold_only=True)` filters those out, using a flag `iter_plays_for_win_prob`
+  tags on every play. The after-success and after-caught lookups don't need
+  this: those are states you've already reached, and — same
+  path-independence assumption RE24 itself relies on — it doesn't matter how
+  you got there.
 
 **Concretely, down 1 with 2 outs in the bottom of the 9th** (runner on 1st,
-steal of 2nd): win-probability break-even is **53.7%** — meaningfully lower
+steal of 2nd): win-probability break-even is **51.5%** — meaningfully lower
 than RE24's ~71-74% for the same base-out situation. Tied in that same spot
-is the opposite: break-even is **61.4%**, still above RE24's baseline
-because a caught stealing there doesn't lose the game (it just sends it to
-extras, so there's more to protect), even though the gap is smaller than it
-first looked. Down 2 sits in between (64.8%). None of this is hardcoded —
-it's what the data says once "value" means win probability instead of runs.
+is different in an interesting way: break-even is **71.0%**, landing close
+to RE24's own baseline instead of falling, because a caught stealing there
+doesn't lose the game (it just sends it to extras) — the sudden-death
+dynamic that makes trailing so different mostly cancels out once the game
+is merely tied rather than lost. None of this is hardcoded — it's what the
+data says once "value" means win probability instead of runs.
 
-**A genuinely humbling finding along the way**: the first version of this
-(3 seasons) gave 45.6% (down 1) and 90.2% (tied) — neither cell was ever
-flagged low-confidence (both cleared the `n>=20` threshold), but adding
-2021-2022 moved both numbers by double digits. `n>=20` was enough to avoid
-nonsensical results, not enough for a *stable* one. The qualitative story
-(trailing lowers the bar below RE24's baseline, tied raises it above) held
-across both sample sizes — that's the part to trust; the exact decimal
-needed more data to land where it should. See `notebooks/eda.ipynb`,
-section 14.5, for the side-by-side comparison.
+**Two real corrections happened getting here, both surfaced by direct
+questions rather than assumed away** (see `notebooks/eda.ipynb`, sections
+14.5-14.6 for the full before/after comparisons):
+1. *Sample size.* The first version (3 seasons, unconditional baseline) gave
+   45.6% (down 1) / 90.2% (tied). Neither cell was ever flagged
+   low-confidence (both cleared `n>=20`), but adding 2021-2022 moved both by
+   double digits. `n>=20` was enough to avoid nonsensical results, not
+   enough for a *stable* one.
+2. *Baseline definition.* Even with 5 seasons, using the unconditional
+   "current state" value (blending in real steal attempts) gave 53.7% /
+   61.4% — still measurably off from the correct hold-only answer (51.5% /
+   71.0%), especially for the tied case. Validated the fix against an
+   independent, from-scratch computation (manually filtering to "no steal
+   attempted next" from the raw play-by-play): 7.16% vs. the table's 7.14%
+   for the down-1 case — matches.
 
-**Also checked directly**: does the "current state" win probability
-(e.g. 7.4% for the down-1 case) implicitly assume no steal was attempted?
-No — it's an average across every real historical instance of that exact
-situation, including the ~11% of the time a steal actually was attempted.
-Checked whether that biases the reward/cost math: the subset that DID
-attempt a steal from that exact spot won at least as often as the subset
-that didn't (10.0% vs. 7.2%, small sample on the "attempted" side) — real
-managers' in-the-moment judgment here isn't contradicted by what the
-break-even math says. See `notebooks/eda.ipynb`, section 14.6.
+The qualitative story (trailing lowers the bar well below RE24's baseline,
+tied lands close to it rather than dramatically above) held across every
+version — that's the part to trust throughout; the exact decimals needed
+both fixes to settle where they should.
 
 `src/demo_decision.py` fits the real model (not hardcoded example
 probabilities) on the same train split `src/train.py` uses, then walks real

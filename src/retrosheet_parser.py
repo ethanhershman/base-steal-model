@@ -564,8 +564,16 @@ def iter_plays_for_win_prob(data_dir: str):
     for free (no algebraic "flip to the opponent" step that could get a
     sudden-death edge case wrong).
 
-    Yields dicts: {inning, half, outs, base_code, score_diff, won, game_id}.
-    A tied final score (extremely rare -- suspended/rain-shortened games)
+    Each record also flags whether ITS OWN triggering play was a steal
+    attempt (`is_steal_attempt`) -- needed so a "before the decision"
+    baseline can be estimated conditional on the runner NOT going on this
+    exact pitch, rather than blending in the minority of historical
+    instances where a steal actually was attempted from that state (which
+    is a different question than "what happens if we hold here").
+
+    Yields dicts: {inning, half, outs, base_code, score_diff, won,
+    is_steal_attempt, game_id}. A tied final score (extremely rare --
+    suspended/rain-shortened games)
     is skipped rather than guessed at.
     """
     files = sorted(glob.glob(os.path.join(data_dir, "*.EV*")))
@@ -578,12 +586,13 @@ def iter_plays_for_win_prob(data_dir: str):
             final_visitor, final_home = gs.score
             if final_visitor == final_home:
                 return  # tied final score -- skip, don't guess a winner
-            for inning, half, outs, bc, score_diff in buffer:
+            for inning, half, outs, bc, score_diff, is_steal in buffer:
                 won = int((half == 1 and final_home > final_visitor) or
                           (half == 0 and final_visitor > final_home))
                 recs.append({
                     "inning": inning, "half": half, "outs": outs,
                     "base_code": bc, "score_diff": score_diff, "won": won,
+                    "is_steal_attempt": is_steal,
                 })
 
         recs = []
@@ -615,7 +624,7 @@ def iter_plays_for_win_prob(data_dir: str):
                         old_inning, old_half = half_key
                         old_defense = 1 - old_half
                         buffer.append((old_inning, old_half, 3, "END",
-                                       gs.score[old_half] - gs.score[old_defense]))
+                                       gs.score[old_half] - gs.score[old_defense], False))
                     half_key = key
                     gs.new_half_inning(inning, half)
                     if gs.pending_radj:
@@ -624,14 +633,22 @@ def iter_plays_for_win_prob(data_dir: str):
                         gs.pending_radj = []
                     if event.strip() not in ("NP", ""):
                         defense = 1 - half
+                        # Whether THIS play (the one about to be resolved from
+                        # this pre-state) is itself a steal attempt -- needed
+                        # to separate "value of this state, unconditionally"
+                        # from "value of this state IF the runner doesn't go
+                        # on this pitch", which is what a break-even decision
+                        # should actually compare against (see
+                        # win_probability.py, build_win_prob's hold_only flag).
+                        is_steal = bool(STEAL_RE.search(_strip_markers(event)))
                         buffer.append((inning, half, gs.outs, base_code(gs.bases),
-                                       gs.score[half] - gs.score[defense]))
+                                       gs.score[half] - gs.score[defense], is_steal))
                     update_state(event, gs, batter)
         if half_key is not None:
             old_inning, old_half = half_key
             old_defense = 1 - old_half
             buffer.append((old_inning, old_half, 3, "END",
-                           gs.score[old_half] - gs.score[old_defense]))
+                           gs.score[old_half] - gs.score[old_defense], False))
         if buffer:
             flush()
         for r in recs:

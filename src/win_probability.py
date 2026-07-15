@@ -58,11 +58,19 @@ def _score_bucket(score_diff: int) -> int:
     return max(-SCORE_CLIP, min(SCORE_CLIP, score_diff))
 
 
-def build_win_prob(data_dirs, min_n: int = MIN_CELL_N) -> dict:
+def build_win_prob(data_dirs, min_n: int = MIN_CELL_N, hold_only: bool = False) -> dict:
     """Return {(inning_b, half, outs, base_code, score_b): (win_rate, n)}.
 
     outs=3 entries use base_code='END' and represent "this team's turn just
     ended (by any means) at this score" -- see module docstring.
+
+    hold_only=True excludes every record whose OWN triggering play was a
+    steal attempt -- use this to build the "before the decision" baseline
+    for win_prob_break_even's `cur` lookup (see that function's docstring
+    for why this matters: the unconditional table blends in the minority
+    of historical instances where a steal actually was attempted from that
+    state, which answers a different question than "what happens if we
+    hold here").
     """
     if isinstance(data_dirs, str):
         data_dirs = [data_dirs]
@@ -71,6 +79,8 @@ def build_win_prob(data_dirs, min_n: int = MIN_CELL_N) -> dict:
     counts = defaultdict(int)
     for data_dir in data_dirs:
         for rec in iter_plays_for_win_prob(data_dir):
+            if hold_only and rec["is_steal_attempt"]:
+                continue
             key = (_inning_bucket(rec["inning"]), rec["half"], rec["outs"],
                   rec["base_code"], _score_bucket(rec["score_diff"]))
             wins[key] += rec["won"]
@@ -144,8 +154,8 @@ def win_prob_lookup(table: dict, inning: int, half: int, outs: int,
     return 0.5, 0, "no data (default)"
 
 
-def win_prob_break_even(table: dict, inning: int, half: int, outs: int,
-                        base_code: str, score_diff: int, target: str,
+def win_prob_break_even(table: dict, hold_table: dict, inning: int, half: int,
+                        outs: int, base_code: str, score_diff: int, target: str,
                         min_n: int = MIN_CELL_N):
     """Break-even success rate for a steal, in win-probability terms.
 
@@ -154,13 +164,27 @@ def win_prob_break_even(table: dict, inning: int, half: int, outs: int,
     runs, and a caught-for-the-3rd-out looks up the empirical 'END' state
     (see module docstring) instead of assuming RE=0 / flipping algebraically.
 
+    The "current state" (`cur`) is looked up in `hold_table` -- built with
+    build_win_prob(..., hold_only=True) -- NOT `table`. This matters: the
+    proper break-even comparison is EV(steal) vs. EV(hold), where "hold"
+    specifically means the runner does NOT go on this pitch. Using the
+    unconditional table for `cur` would blend in the minority of historical
+    instances where a steal WAS attempted from that exact state, which
+    answers "what usually happens here" rather than "what happens if we
+    don't send the runner right now" -- the wrong baseline for a decision
+    that's specifically asking whether to send the runner right now. The
+    after-success and after-caught lookups still use the unconditional
+    `table`, since those represent states already reached, and (under the
+    same path-independence assumption RE24 itself relies on) it doesn't
+    matter how you got there, only that you're there now.
+
     Returns (break_even, reward, cost, min_n, sources) -- min_n is the
     smallest sample size behind the three lookups this answer depends on,
     and sources names which fallback stage each one used, so callers can
     flag low-confidence answers (small min_n / coarse sources) rather than
     presenting every number with the same false precision.
     """
-    cur, n_cur, src_cur = win_prob_lookup(table, inning, half, outs, base_code, score_diff, min_n)
+    cur, n_cur, src_cur = win_prob_lookup(hold_table, inning, half, outs, base_code, score_diff, min_n)
 
     succ_base = _state_after_success(base_code, target)
     succ_score = score_diff + (1 if target == "H" else 0)
@@ -205,12 +229,14 @@ def main():
     args = ap.parse_args()
 
     table = build_win_prob(args.data_dirs)
+    hold_table = build_win_prob(args.data_dirs, hold_only=True)
     print(f"win-probability table built from {len(table)} (inning, half, outs, "
           f"base, score) cells across {', '.join(args.data_dirs)}")
 
     print("\nExample: runner on 1st, steal of 2nd, 2 outs, bottom of 9th or later:")
     for score_diff in (-2, -1, 0, 1, 2):
-        be, reward, cost, n, sources = win_prob_break_even(table, 9, 1, 2, "1__", score_diff, "2")
+        be, reward, cost, n, sources = win_prob_break_even(
+            table, hold_table, 9, 1, 2, "1__", score_diff, "2")
         print(f"  score {score_diff:+d} (batting team perspective): "
               f"win-prob break-even = {be:.1%}  (reward {reward:+.3f}, cost {cost:+.3f}, "
               f"min_n={n})")
