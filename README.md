@@ -86,7 +86,9 @@ leakage checks, model diagnostics (confusion matrices, calibration,
 most-confident-wrong predictions), and the decision layer (section 13:
 the full RE24 table with sample sizes per cell, break-even rates across
 all 24 valid steal situations, and the real model's GO/HOLD calls on 25
-real held-out attempts).
+real held-out attempts; section 14: the win-probability upgrade for
+late/close games, with the exact reward/cost/break-even arithmetic shown
+step by step for the down-1-vs-tied bottom-of-the-9th comparison).
 
 ## What's here
 
