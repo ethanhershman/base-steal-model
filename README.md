@@ -21,6 +21,9 @@ run-based math badly understates the cost of a caught stealing that ends a
 trailing team's last chance. Backtesting the full system against history
 (see `ROADMAP.md`, "Step 5") is the natural next step.
 
+**`src/predict.py` is the integration point for anything built on top of
+this** (e.g. a website) — see "For website/app integration" below.
+
 **2021-2022 are parsed and kept for comparison, but excluded from the
 feature table / model by default.** MLB's 2023 rule changes (bigger bases,
 limited pickoff attempts) measurably shifted stolen-base success rates —
@@ -82,6 +85,11 @@ python -m src.run_expectancy --out data/sample/re24_2023_2025.csv
 python -m src.win_probability
 python -m src.demo_decision
 
+# 7. Try the single integration function a website backend would call --
+#    same tables/model as above, unified behind one call per situation
+#    (see "For website/app integration" below).
+python -m src.predict
+
 # Validate the parser + decision layer against known facts
 python -m pytest tests/ -q
 ```
@@ -113,8 +121,10 @@ baseline to 2013-2025).
 | `src/run_expectancy.py` | Builds the RE24 table from Retrosheet play-by-play and computes situational steal break-even rates (`cost / (reward + cost)`). |
 | `src/win_probability.py` | Empirical win-probability table (inning/half/outs/bases/score margin) and break-even math for high-leverage late/close situations. Two season ranges: 2013-2025 for the hold-only baseline (checked era-consistent), 2021-2025 for after-success/after-caught (checked NOT era-consistent). |
 | `src/demo_decision.py` | Fits the real trained model, then makes GO/HOLD calls on real held-out attempts by comparing its predicted probability against the RE24 (or win-probability, if high-leverage) break-even for that exact situation. |
-| `notebooks/eda.ipynb` | Exploratory checks + validation for every step above. |
-| `tests/` | Regression tests (leaderboard, success rate, RE24 anchors, win-probability sanity checks). |
+| `src/predict.py` | **The integration point for a website/app.** `predict_steal_decision(...)` — one function call, one row of output (current win probability, win probability if the steal succeeds, break-even, model's predicted success probability, GO/HOLD). See "For website/app integration" below. |
+| `notebooks/eda.ipynb` | Exploratory checks + validation for the data/features/model (sections 1-12) and the decision layer (sections 13-14.8). |
+| `notebooks/predict_demo.ipynb` | Runnable walkthrough of `src/predict.py`'s API — start here to see it in action before wiring it into a backend. |
+| `tests/` | Regression tests (leaderboard, success rate, RE24 anchors, win-probability sanity checks, `predict.py`'s unified interface). |
 | `data/retrosheet_2023/` | Bundled raw 2023 event + roster files. |
 | `data/sample/` | Generated sample outputs (steal tables + combined feature table). |
 
@@ -394,6 +404,78 @@ would have paid off, but not what a HOLD call would have avoided. A real
 backtest (run the full held-out set, compare aggregate run/win value of the
 model's recommendations against what actually happened) is the natural next
 step — see ROADMAP.md, "Step 5."
+
+## For website/app integration
+
+`src/predict.py` is the one module a website backend needs — it wraps
+everything above (the trained model, RE24, win probability, the
+RE24-vs-win-probability switch) behind a single function call, so nothing
+above this section needs to be reimplemented or re-derived to build on top
+of it. Start with `notebooks/predict_demo.ipynb` to see it run before
+wiring it into a backend.
+
+```python
+from src.predict import load_tables, load_model, predict_steal_decision
+
+# Build once, at process/server startup -- both read a decade+ of
+# historical data and are too slow to redo per web request.
+tables = load_tables()          # RE24 + win-probability tables
+model, medians = load_model()   # trained XGBoost model + fill-in values
+                                 # for missing runner/catcher inputs
+
+# Call once per request/situation.
+result = predict_steal_decision(
+    tables, model, medians,
+    # game state
+    inning=9, half=1,           # half: 0 = top (visiting team batting), 1 = bottom (home team batting)
+    outs=2,
+    base_code="1__",            # 8-char base state, e.g. "1__" = runner on 1st only,
+                                 # "_23" = runners on 2nd and 3rd -- see src/run_expectancy.BASE_STATES
+    score_diff=-1,               # batting team's score minus the other team's, right now
+    target="2",                 # which base the runner is stealing: "2", "3", or "H"
+    # player inputs -- all optional; omit/None falls back to a sensible default
+    runner_sprint_speed=29.5,   # Statcast ft/s
+    runner_age=27,
+    catcher_pop_time=1.95,      # Statcast seconds, catcher's throw-to-base time
+    runner_prior_sr=0.82,       # runner's stolen-base success rate so far
+    runner_prior_att=25,        # runner's stolen-base attempts so far
+    pitcher_prior_sr_allowed=0.78,
+    catcher_prior_cs_rate=0.28,
+    runner_bats_lhb=False,
+    pitcher_throws_lhp=False,
+    balls=1, strikes=1,
+    is_double_steal=False,
+)
+```
+
+`result` is a plain dict, ready to hand straight to a frontend:
+
+| key | meaning |
+|---|---|
+| `win_prob_current` | win probability right now, before the steal |
+| `win_prob_if_success` | win probability if the steal succeeds |
+| `break_even` | minimum success rate needed to justify attempting — same 0-1 scale as `p_success` regardless of which layer (RE24 or win probability) produced it |
+| `p_success` | the trained model's predicted success probability for this exact situation |
+| `decision` | `"GO"` if `p_success > break_even`, else `"HOLD"` |
+| `layer` | which engine actually decided: `"RE24"`, `"WP"` (win probability, high-leverage), or `"WP (RE24 had no data)"` (see below) |
+| `min_n` / `low_confidence` | sample size behind the answer and whether it's thin (`< 20`) — worth showing as a caveat in the UI rather than a bare number |
+
+For showing several situations in one table (e.g. a "what if" comparison
+across counts, or a full lineup), `predict_steal_decisions_table` takes a
+list of the same kwargs and returns a single `pandas.DataFrame` with
+`decision` as the last column.
+
+**Two things this handles automatically, without extra code on the caller's
+side:**
+- **Missing player inputs.** A website user won't always know a specific
+  runner's exact sprint speed, or the app may not have looked it up yet.
+  Leave that field `None` (or omit it) and it falls back to the training
+  set's median value — never a crash, never a nonsensical zero.
+- **Rare base/out combinations RE24 has no historical data for.** Rather
+  than raising an error, `predict_steal_decision` falls through to the
+  win-probability path (which degrades gracefully on its own — see
+  "Win probability for late/close games" above) and flags the result as
+  `"WP (RE24 had no data)"` so the caller can see that happened.
 
 ## Known limitations
 
