@@ -7,15 +7,13 @@ venv/
 .pytest_cache/
 .DS_Store
 
-# Generated data (regenerate with the parser). The raw 2023 Retrosheet files
-# and the sample outputs ARE committed so the repo runs out of the box; larger
-# pulls you add later are ignored:
-data/retrosheet_2019/
-data/retrosheet_2020/
-data/retrosheet_2021/
-data/retrosheet_2022/
-data/retrosheet_2024/
-data/retrosheet_2025/
+# Generated data (regenerate with fetch_retrosheet.py + the parser). The raw
+# 2023 Retrosheet files and the sample outputs ARE committed so the repo runs
+# out of the box; every other season is ignored so a fetch of a decade of
+# history (e.g. for win_probability.py's extended hold-only baseline)
+# doesn't bloat the repo.
+data/retrosheet_*/
+!data/retrosheet_2023/
 data/statcast/
 
 # Full plate-appearance-level batting lines (~14MB/season, one row per PA

@@ -68,7 +68,13 @@ python -m src.features --out data/sample/features_2023_2025.csv
 #    --model xgboost to run just one.
 python -m src.train --features data/sample/features_2023_2025.csv --test-frac 0.2
 
-# 5. Build the RE24 + win-probability tables, then see the decision layer
+# 5. Fetch 2013-2020 too -- only needed for the win-probability table's
+#    hold-only baseline (win_probability.py reads raw event files directly,
+#    not through the parser/feature-table pipeline above), which safely
+#    extends further back than the steal-outcome model can.
+python -m src.fetch_retrosheet --seasons 2013 2014 2015 2016 2017 2018 2019 2020 --dest data
+
+# 6. Build the RE24 + win-probability tables, then see the decision layer
 #    make real GO/HOLD calls on real held-out attempts using the actual
 #    trained model (not hardcoded example probabilities) -- RE24 for most
 #    situations, win probability for high-leverage late/close ones.
@@ -89,8 +95,10 @@ all 24 valid steal situations, and the real model's GO/HOLD calls on 25
 real held-out attempts; section 14: the win-probability upgrade for
 late/close games, with the exact reward/cost/break-even arithmetic shown
 step by step for the down-1-vs-tied bottom-of-the-9th comparison, a
-3-season-vs-5-season sensitivity check, and a direct test of whether the
-"current state" baseline is biased by teams' own steal decisions).
+3-season-vs-5-season sensitivity check, a direct test of whether the
+"current state" baseline is biased by teams' own steal decisions, and
+(section 14.7) the era-consistency checks behind extending the hold-only
+baseline to 2013-2025).
 
 ## What's here
 
@@ -103,7 +111,7 @@ step by step for the down-1-vs-tied bottom-of-the-9th comparison, a
 | `src/features.py` | Combines the post-rule-change seasons (default 2023-2025) into one leakage-safe, Statcast-joined feature table (running runner/pitcher/catcher/batter priors from prior attempts only). |
 | `src/train.py` | Trains + evaluates the logistic-regression baseline and an XGBoost model (`--model logistic\|xgboost\|both`), date-based split (train on the earliest dates, test on the latest `--test-frac`) so no future data ever leaks into training. |
 | `src/run_expectancy.py` | Builds the RE24 table from Retrosheet play-by-play and computes situational steal break-even rates (`cost / (reward + cost)`). |
-| `src/win_probability.py` | Empirical win-probability table (inning/half/outs/bases/score margin) and break-even math for high-leverage late/close situations, where RE24's run-based math is the wrong currency. |
+| `src/win_probability.py` | Empirical win-probability table (inning/half/outs/bases/score margin) and break-even math for high-leverage late/close situations. Two season ranges: 2013-2025 for the hold-only baseline (checked era-consistent), 2021-2025 for after-success/after-caught (checked NOT era-consistent). |
 | `src/demo_decision.py` | Fits the real trained model, then makes GO/HOLD calls on real held-out attempts by comparing its predicted probability against the RE24 (or win-probability, if high-leverage) break-even for that exact situation. |
 | `notebooks/eda.ipynb` | Exploratory checks + validation for every step above. |
 | `tests/` | Regression tests (leaderboard, success rate, RE24 anchors, win-probability sanity checks). |
@@ -298,16 +306,8 @@ Four things worth knowing about how it's built:
   that always preserves the exact inning/half (never blending a 9th-inning
   question with 3rd-inning data) before widening anything else. Extreme
   corners (e.g. a big lead late with runners on) are honestly sparse even
-  across 5 seasons and get flagged low-confidence rather than presented with
-  false precision.
-- **Built from 2021-2025 (5 seasons), wider than RE24's 3.** Win probability
-  by score/inning/outs/bases isn't affected by the 2023 steal-specific rule
-  changes the way steal success rates are, so there's no reason to throw
-  away 2021-2022 here — and the sparser late/close cells benefit a lot from
-  the extra data. 2021-2022 do share the automatic extra-innings runner rule
-  with 2023-2025 (in effect since 2020), so extra-inning dynamics stay
-  consistent; going back further would cross that rule boundary and isn't
-  done without deliberately checking for it.
+  with this much history and get flagged low-confidence rather than
+  presented with false precision.
 - **The "current state" baseline excludes historical steal attempts.** The
   break-even question is "steal now vs. hold now," so the pre-decision
   baseline needs to specifically represent "hold" — not an average across
@@ -315,24 +315,26 @@ Four things worth knowing about how it's built:
   ~11% of the time a steal actually was attempted next (that answers "what
   usually happens here," a different question). `build_win_prob(...,
   hold_only=True)` filters those out, using a flag `iter_plays_for_win_prob`
-  tags on every play. The after-success and after-caught lookups don't need
-  this: those are states you've already reached, and — same
-  path-independence assumption RE24 itself relies on — it doesn't matter how
-  you got there.
+  tags on every play.
+- **Two DIFFERENT season ranges feed two DIFFERENT tables, and the split is
+  load-bearing, not stylistic.** `win_prob_break_even` takes both a `table`
+  (for after-success/after-caught) and a `hold_table` (for the current-state
+  baseline) as separate arguments — see below for why they can't share a
+  season range.
 
 **Concretely, down 1 with 2 outs in the bottom of the 9th** (runner on 1st,
-steal of 2nd): win-probability break-even is **51.5%** — meaningfully lower
+steal of 2nd): win-probability break-even is **51.4%** — meaningfully lower
 than RE24's ~71-74% for the same base-out situation. Tied in that same spot
-is different in an interesting way: break-even is **71.0%**, landing close
-to RE24's own baseline instead of falling, because a caught stealing there
-doesn't lose the game (it just sends it to extras) — the sudden-death
-dynamic that makes trailing so different mostly cancels out once the game
-is merely tied rather than lost. None of this is hardcoded — it's what the
-data says once "value" means win probability instead of runs.
+is different in an interesting way: break-even is **75.3%**, landing above
+RE24's own baseline instead of falling, because a caught stealing there
+doesn't lose the game (it just sends it to extras) — protecting a shot at a
+walk-off is worth more than the modest reward of advancing a base. None of
+this is hardcoded — it's what the data says once "value" means win
+probability instead of runs.
 
-**Two real corrections happened getting here, both surfaced by direct
-questions rather than assumed away** (see `notebooks/eda.ipynb`, sections
-14.5-14.6 for the full before/after comparisons):
+**Three real corrections happened getting here, each surfaced by a direct
+question rather than assumed away** (see `notebooks/eda.ipynb`, sections
+14.5-14.7 for the full before/after comparisons):
 1. *Sample size.* The first version (3 seasons, unconditional baseline) gave
    45.6% (down 1) / 90.2% (tied). Neither cell was ever flagged
    low-confidence (both cleared `n>=20`), but adding 2021-2022 moved both by
@@ -340,16 +342,28 @@ questions rather than assumed away** (see `notebooks/eda.ipynb`, sections
    enough for a *stable* one.
 2. *Baseline definition.* Even with 5 seasons, using the unconditional
    "current state" value (blending in real steal attempts) gave 53.7% /
-   61.4% — still measurably off from the correct hold-only answer (51.5% /
-   71.0%), especially for the tied case. Validated the fix against an
-   independent, from-scratch computation (manually filtering to "no steal
-   attempted next" from the raw play-by-play): 7.16% vs. the table's 7.14%
-   for the down-1 case — matches.
+   61.4% — still measurably off from the correct hold-only answer, especially
+   for the tied case. Validated the fix against an independent,
+   from-scratch computation (manually filtering to "no steal attempted
+   next" from the raw play-by-play) — matched closely.
+3. *How far back is safe to extend.* Pulled 2013-2020 (eight more seasons)
+   to shrink the sparse cells further, restricted to `hold_only=True` so
+   the 2023 rule change couldn't leak in directly. Checked whether that
+   restriction was *sufficient*, not just applied it: the hold-only
+   baseline turned out to be genuinely era-consistent (2013-2020 vs.
+   2021-2025 differ by 0.04 percentage points for the down-1 case) — safe
+   to extend. But the after-success value is NOT era-consistent (11.2% vs.
+   13.9% for the same state) — because once a runner reaches 2nd, whether
+   *they* subsequently advance further is itself shaped by the bigger-base
+   rule, a channel `hold_only` doesn't reach. So `hold_table` extends to
+   2013-2025; `table` stays on 2021-2025, like RE24.
 
 The qualitative story (trailing lowers the bar well below RE24's baseline,
-tied lands close to it rather than dramatically above) held across every
-version — that's the part to trust throughout; the exact decimals needed
-both fixes to settle where they should.
+tied raises it above) held across every version — that's the part to trust
+throughout; the exact decimals needed all three fixes to settle where they
+should, and blindly pooling more history without checking era-consistency
+first (step 3) would have reintroduced the exact confound the hold-only fix
+was meant to remove.
 
 `src/demo_decision.py` fits the real model (not hardcoded example
 probabilities) on the same train split `src/train.py` uses, then walks real

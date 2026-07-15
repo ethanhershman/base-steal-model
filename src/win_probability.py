@@ -22,20 +22,43 @@ keyed on the moment every half-inning actually ended (regardless of how),
 so walk-off/sudden-death dynamics fall out for free instead of needing an
 error-prone "flip to the opponent's perspective" formula.
 
-Unlike src/features.py and src/run_expectancy.py, this defaults to
-2021-2025 (five seasons, not three): win probability by score/inning/outs/
-bases isn't affected by the 2023 steal-specific rule changes the way steal
-SUCCESS rates are, so there's no reason to throw away 2021-2022 here --
-more data matters a lot for the sparser late/close cells. 2021-2022 do
-share the automatic extra-innings runner rule (in effect since 2020) with
-2023-2025, so extra-inning dynamics stay consistent; going back further
-than 2021 would cross that boundary and mix in a different extra-innings
-rule, which isn't done here without deliberately checking for it first.
+win_prob_break_even takes TWO tables, built from DIFFERENT season ranges,
+and this split is load-bearing, not a stylistic choice:
+
+  * `hold_table` (the "before the decision" baseline -- see
+    build_win_prob's hold_only) is built from 2013-2025 (thirteen
+    seasons). Checked directly: this specific quantity -- P(win) in a
+    given state, conditional on NOT attempting a steal next -- is stable
+    across eras (2013-2020 vs 2021-2025 give within-noise-of-each-other
+    answers for the same state), so pooling more history here is safe and
+    meaningfully shrinks the sparse late/close cells.
+  * `table` (used for the after-success and after-caught lookups) stays on
+    2021-2025 only, same as RE24. This was NOT safe to extend: checked
+    directly and the after-success value for the same state differs
+    genuinely across eras (e.g. down 1, runner now on 2nd: 11.2% in
+    2013-2020 vs 13.9% in 2021-2025) -- because once a runner reaches that
+    new state, whether they go on to advance further is ITSELF affected by
+    the bigger-base rule, so the "hold_only" fix doesn't reach it. The
+    after-success/after-caught states are genuinely different quantities
+    across rule eras, not just noisier estimates of the same one.
+
+Two guards make even the hold_table's wider range safe rather than just
+convenient:
+
+  * `hold_only=True` excludes historical instances where a steal was
+    actually attempted from the exact state being queried -- the direct
+    channel by which the 2023 rule change could leak into a "before the
+    decision" estimate.
+  * `legacy_dirs` excludes extra innings (10th+) from pre-2020 seasons,
+    since the automatic extra-innings runner started in 2020 -- pooling
+    older extra-inning plays with 2020+ ones would mix two different
+    extra-innings dynamics into the same bucket. Innings 1-9 from those
+    seasons aren't affected by that rule and are used normally.
 
 Usage:
-    python -m src.win_probability --data-dirs data/retrosheet_2021 \
-        data/retrosheet_2022 data/retrosheet_2023 data/retrosheet_2024 \
-        data/retrosheet_2025
+    python -m src.win_probability --data-dirs data/retrosheet_2013 ... \
+        data/retrosheet_2025 --legacy-dirs data/retrosheet_2013 ... \
+        data/retrosheet_2020
 """
 from __future__ import annotations
 
@@ -49,6 +72,17 @@ MIN_CELL_N = 20        # below this, fall back to a coarser lookup
 SCORE_CLIP = 4          # score margins beyond +-4 are clipped together
 MAX_INNING = 9          # 9th and later all bucket together ("9+")
 
+# Default season range for the win-probability table: pre-2020 seasons
+# (LEGACY) have extra innings excluded (see build_win_prob's legacy_dirs)
+# since they predate the automatic extra-innings runner rule; 2021-2025
+# (MODERN) are used without restriction.
+LEGACY_SEASONS = [2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020]
+MODERN_SEASONS = [2021, 2022, 2023, 2024, 2025]
+
+
+def _season_dirs(seasons, base="data"):
+    return [f"{base}/retrosheet_{y}" for y in seasons]
+
 
 def _inning_bucket(inning: int) -> int:
     return min(inning, MAX_INNING)
@@ -58,7 +92,8 @@ def _score_bucket(score_diff: int) -> int:
     return max(-SCORE_CLIP, min(SCORE_CLIP, score_diff))
 
 
-def build_win_prob(data_dirs, min_n: int = MIN_CELL_N, hold_only: bool = False) -> dict:
+def build_win_prob(data_dirs, min_n: int = MIN_CELL_N, hold_only: bool = False,
+                   legacy_dirs=None) -> dict:
     """Return {(inning_b, half, outs, base_code, score_b): (win_rate, n)}.
 
     outs=3 entries use base_code='END' and represent "this team's turn just
@@ -70,15 +105,30 @@ def build_win_prob(data_dirs, min_n: int = MIN_CELL_N, hold_only: bool = False) 
     for why this matters: the unconditional table blends in the minority
     of historical instances where a steal actually was attempted from that
     state, which answers a different question than "what happens if we
-    hold here").
+    hold here"). Even with hold_only, older seasons still carry SOME
+    residual rule-era contamination for this purpose: excluding the steal
+    attempt at THIS decision point doesn't purge the effect of OTHER steal
+    attempts later in the same game, which are still shaped by whatever
+    stolen-base rules were in effect that season.
+
+    legacy_dirs: optional subset of data_dirs where extra innings (10th or
+    later) are excluded before aggregating. Seasons before 2020 don't have
+    the automatic extra-innings runner, so pooling their extra-inning plays
+    with 2020+ ones would mix two different extra-innings dynamics into the
+    same "9th inning or later" bucket. Innings 1-9 from these dirs (not
+    affected by that rule) are still used normally.
     """
     if isinstance(data_dirs, str):
         data_dirs = [data_dirs]
+    legacy_dirs = set(legacy_dirs or [])
 
     wins = defaultdict(int)
     counts = defaultdict(int)
     for data_dir in data_dirs:
+        is_legacy = data_dir in legacy_dirs
         for rec in iter_plays_for_win_prob(data_dir):
+            if is_legacy and rec["inning"] > 9:
+                continue
             if hold_only and rec["is_steal_attempt"]:
                 continue
             key = (_inning_bucket(rec["inning"]), rec["half"], rec["outs"],
@@ -222,16 +272,28 @@ def is_high_leverage(inning: int, score_diff: int, leverage_innings: int = 7,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dirs", nargs="+",
-                    default=["data/retrosheet_2021", "data/retrosheet_2022",
-                             "data/retrosheet_2023", "data/retrosheet_2024",
-                             "data/retrosheet_2025"])
+    ap.add_argument("--data-dirs", nargs="+", default=_season_dirs(MODERN_SEASONS),
+                    help="seasons for the after-success/after-caught table -- "
+                         "kept post-rule-change only (like RE24): checked "
+                         "directly and these values genuinely differ across "
+                         "eras, not just noisier estimates of the same one")
+    ap.add_argument("--hold-data-dirs", nargs="+",
+                    default=_season_dirs(LEGACY_SEASONS) + _season_dirs(MODERN_SEASONS),
+                    help="seasons for the hold-only 'before the decision' "
+                         "baseline -- wider, since that specific quantity was "
+                         "checked and found stable across eras")
+    ap.add_argument("--legacy-dirs", nargs="+", default=_season_dirs(LEGACY_SEASONS),
+                    help="subset of --hold-data-dirs to exclude extra innings "
+                         "from (pre-2020 seasons, which predate the automatic "
+                         "extra-innings runner rule)")
     args = ap.parse_args()
 
     table = build_win_prob(args.data_dirs)
-    hold_table = build_win_prob(args.data_dirs, hold_only=True)
-    print(f"win-probability table built from {len(table)} (inning, half, outs, "
-          f"base, score) cells across {', '.join(args.data_dirs)}")
+    hold_table = build_win_prob(args.hold_data_dirs, hold_only=True, legacy_dirs=args.legacy_dirs)
+    print(f"win-probability table (after-success/after-caught): {len(table)} cells "
+          f"from {', '.join(args.data_dirs)}")
+    print(f"hold-only table (before-the-decision baseline): {len(hold_table)} cells "
+          f"from {', '.join(args.hold_data_dirs)}")
 
     print("\nExample: runner on 1st, steal of 2nd, 2 outs, bottom of 9th or later:")
     for score_diff in (-2, -1, 0, 1, 2):
@@ -244,7 +306,10 @@ def main():
 
     print("\nSame situation, but early (3rd inning) -- RE24 regime, for comparison:")
     from .run_expectancy import build_re24, break_even_rate
-    re24 = build_re24(args.data_dirs)
+    # RE24 stays on the post-rule-change seasons only, unlike the win-prob
+    # table above -- the run-scoring environment plausibly shifted with the
+    # 2023 rules, so it doesn't get the "more history is safe" treatment.
+    re24 = build_re24(_season_dirs(MODERN_SEASONS[2:]))  # 2023-2025
     be, reward, cost = break_even_rate(re24, "1__", 2, "2")
     print(f"  RE24 break-even (any score, any early inning) = {be:.1%}")
 

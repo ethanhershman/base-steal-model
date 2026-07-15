@@ -12,11 +12,16 @@ than a run in a blowout, and a caught stealing that ends a trailing team's
 last at-bat is a certain loss, not "0 more runs this inning."
 
 The win-probability "current state" baseline is built with hold_only=True
-(win_probability.build_win_prob) -- it specifically excludes historical
-instances where a steal was actually attempted from that state, since the
-break-even question is "steal now vs. hold now," and blending in the
-minority of real steal attempts would answer a different question ("what
-usually happens here") instead.
+(win_probability.build_win_prob) across 2013-2025 -- it specifically
+excludes historical instances where a steal was actually attempted from
+that state, since the break-even question is "steal now vs. hold now," and
+blending in the minority of real steal attempts would answer a different
+question ("what usually happens here") instead. That exclusion is what
+makes it safe to pool in a decade of extra seasons for this one baseline
+(checked directly: this specific quantity is stable across eras). The
+after-success/after-caught table stays on 2021-2025 only, like RE24 --
+those values genuinely differ across rule eras (checked directly too), so
+they don't get the same extended-history treatment.
 
 Fits on the same train split src/train.py uses (earliest 80% of dates), then
 walks a handful of real HELD-OUT test-set attempts spanning different
@@ -31,6 +36,8 @@ from __future__ import annotations
 
 import argparse
 
+from .win_probability import LEGACY_SEASONS, MODERN_SEASONS, _season_dirs
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -41,15 +48,22 @@ def main():
                     help="seasons for RE24 -- kept post-rule-change only, "
                          "since the run-scoring environment plausibly "
                          "shifted with the 2023 rules too")
-    ap.add_argument("--wp-data-dirs", nargs="+",
-                    default=["data/retrosheet_2021", "data/retrosheet_2022",
-                             "data/retrosheet_2023", "data/retrosheet_2024",
-                             "data/retrosheet_2025"],
-                    help="seasons for the win-probability table -- wider "
-                         "than RE24's, since win prob by score/inning/outs/"
-                         "bases isn't affected by the steal-specific rule "
-                         "changes and benefits a lot from more data in the "
-                         "sparser late/close cells")
+    ap.add_argument("--wp-data-dirs", nargs="+", default=_season_dirs(MODERN_SEASONS),
+                    help="seasons for the win-probability after-success/"
+                         "after-caught table -- kept post-rule-change only, "
+                         "like RE24 (checked directly: these values differ "
+                         "genuinely across eras)")
+    ap.add_argument("--wp-hold-data-dirs", nargs="+",
+                    default=_season_dirs(LEGACY_SEASONS) + _season_dirs(MODERN_SEASONS),
+                    help="seasons for the hold-only 'before the decision' "
+                         "baseline -- wider than the table above's, since "
+                         "that specific quantity was checked and found "
+                         "stable across eras, and the sparser late/close "
+                         "cells benefit a lot from the extra data")
+    ap.add_argument("--wp-legacy-dirs", nargs="+", default=_season_dirs(LEGACY_SEASONS),
+                    help="subset of --wp-hold-data-dirs to exclude extra "
+                         "innings from (pre-2020 seasons, before the "
+                         "automatic extra-innings runner rule)")
     ap.add_argument("--model", choices=["logistic", "xgboost"], default="xgboost")
     ap.add_argument("--test-frac", type=float, default=0.2)
     ap.add_argument("-n", type=int, default=12, help="how many test-set attempts to show")
@@ -77,9 +91,10 @@ def main():
 
     print(f"Building RE24 from {', '.join(args.data_dirs)}...")
     re24 = build_re24(args.data_dirs)
-    print(f"Building win-probability tables from {', '.join(args.wp_data_dirs)}...")
+    print(f"Building win-probability table from {', '.join(args.wp_data_dirs)}...")
     wp_table = build_win_prob(args.wp_data_dirs)
-    wp_hold_table = build_win_prob(args.wp_data_dirs, hold_only=True)
+    print(f"Building hold-only baseline from {', '.join(args.wp_hold_data_dirs)}...")
+    wp_hold_table = build_win_prob(args.wp_hold_data_dirs, hold_only=True, legacy_dirs=args.wp_legacy_dirs)
 
     print(f"\nSteal-decision demo -- real model, real held-out attempts "
           f"({test['date'].min()} to {test['date'].max()})\n")
