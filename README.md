@@ -10,11 +10,13 @@ Two connected pieces (see [`ROADMAP.md`](ROADMAP.md) for the full design):
    success rate for that situation, and recommend a steal only when the
    predicted probability clears it.
 
-This repo has the data foundation done — five parsed seasons (2021-2025),
-Statcast skill data joined on via an id crosswalk, and a leakage-safe
-combined feature table — plus two trained success-probability models
-(logistic regression baseline + XGBoost), both temporally validated. The
-decision layer (see [`ROADMAP.md`](ROADMAP.md)) comes next.
+Both pieces are now in place: five parsed seasons (2021-2025), a leakage-safe
+Statcast-joined feature table, two trained success-probability models
+(logistic regression baseline + XGBoost), and a real RE24 decision layer
+(`src/run_expectancy.py` + `src/demo_decision.py`) that combines the trained
+model's predicted probability with the situational break-even rate to make a
+GO/HOLD call. Backtesting the full system against history (see `ROADMAP.md`,
+"Step 5") is the natural next step.
 
 **2021-2022 are parsed and kept for comparison, but excluded from the
 feature table / model by default.** MLB's 2023 rule changes (bigger bases,
@@ -63,7 +65,13 @@ python -m src.features --out data/sample/features_2023_2025.csv
 #    --model xgboost to run just one.
 python -m src.train --features data/sample/features_2023_2025.csv --test-frac 0.2
 
-# Validate the parser against known facts
+# 5. Build the RE24 table + break-even math, then see the decision layer
+#    make real GO/HOLD calls on real held-out attempts using the actual
+#    trained model (not hardcoded example probabilities).
+python -m src.run_expectancy --out data/sample/re24_2023_2025.csv
+python -m src.demo_decision
+
+# Validate the parser + RE24 table against known facts
 python -m pytest tests/ -q
 ```
 
@@ -82,8 +90,10 @@ most-confident-wrong predictions).
 | `src/id_crosswalk.py` | Builds the Retrosheet id <-> MLBAM id crosswalk (via Chadwick register) needed to join Statcast onto Retrosheet rows. |
 | `src/features.py` | Combines the post-rule-change seasons (default 2023-2025) into one leakage-safe, Statcast-joined feature table (running runner/pitcher/catcher/batter priors from prior attempts only). |
 | `src/train.py` | Trains + evaluates the logistic-regression baseline and an XGBoost model (`--model logistic\|xgboost\|both`), date-based split (train on the earliest dates, test on the latest `--test-frac`) so no future data ever leaks into training. |
+| `src/run_expectancy.py` | Builds the RE24 table from Retrosheet play-by-play and computes situational steal break-even rates (`cost / (reward + cost)`). |
+| `src/demo_decision.py` | Fits the real trained model, then makes GO/HOLD calls on real held-out attempts by comparing its predicted probability against the RE24 break-even for that exact situation. |
 | `notebooks/eda.ipynb` | Exploratory checks + validation for every step above. |
-| `tests/` | Regression tests (leaderboard, success rate). |
+| `tests/` | Regression tests (leaderboard, success rate, RE24 anchors). |
 | `data/retrosheet_2023/` | Bundled raw 2023 event + roster files. |
 | `data/sample/` | Generated sample outputs (steal tables + combined feature table). |
 
@@ -235,6 +245,31 @@ these attempts: exact lead distance, jump timing, pitch type/location, and
 throw accuracy on that specific play. None of that is in the public data
 (see "Known limitations" below), so this is closer to today's ceiling for
 this feature set than a sign of a broken model.
+
+## Decision layer
+
+`src/run_expectancy.py` builds the RE24 table (expected runs to the end of
+the inning, by base state x outs) from the same 2023-2025 Retrosheet
+play-by-play the model trains on — mixing in 2021-2022 would repeat the same
+mistake `src/features.py` already avoids, since the run-scoring environment
+plausibly shifted with the 2023 rules too. Values match textbook anchors
+(bases empty/0-out ≈ 0.50, loaded/0-out ≈ 2.3) and the break-even rate for a
+steal of 2nd lands at 71-74% depending on outs, matching ROADMAP.md's
+expected 70-75% range — but it swings as high as ~90%+ when there's a
+runner also on 3rd (getting caught costs a lot more when it also risks that
+runner) and is lower with 2 outs (getting caught just ends the inning either
+way, so there's less left to lose).
+
+`src/demo_decision.py` fits the real model (not hardcoded example
+probabilities) on the same train split `src/train.py` uses, then walks real
+**held-out** test-set attempts, comparing each one's predicted probability
+against its own situational break-even for a GO/HOLD call — and shows what
+actually happened next to it. This is illustrative, not a backtest: every
+row shown is an attempt that happened, so we can see whether GO calls would
+have paid off, but not what a HOLD call would have avoided. A real backtest
+(run the full held-out set, compare aggregate run value of the model's
+recommendations against what actually happened) is the natural next step —
+see ROADMAP.md, "Step 5."
 
 ## Known limitations
 

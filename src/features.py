@@ -69,6 +69,14 @@ def _season_of(path: str) -> str:
     return os.path.basename(path).split("_")[-1].replace(".csv", "")
 
 
+def _base_code(r: dict) -> str:
+    """3-char base-occupancy code at the moment of the attempt, e.g. '1_3'
+    for runners on first and third -- same format as
+    retrosheet_parser.base_code(), needed by src/run_expectancy.py to look
+    up the right RE24 cell for the decision layer."""
+    return "".join(str(i) if r.get(f"on_{i}b") else "_" for i in (1, 2, 3))
+
+
 def _load_batting_rows(paths: list) -> list:
     rows = []
     for path in paths:
@@ -178,11 +186,17 @@ def build_features(steals_paths: list, statcast_dir: str,
         feat = {
             "season": season,
             "date": r["date"],
+            "game_id": r["game_id"],
             "runner_id": runner,
             "pitcher_id": pitcher,
             "catcher_id": catcher,
             "batter_id": batter,
             "target_base": r["target_base"],
+            # base occupancy BEFORE the attempt, e.g. "1_3" -- not a model
+            # feature (the model already sees is_double_steal/runner_on_third
+            # derived from it), but needed by src/run_expectancy.py to look
+            # up the right RE24 cell for the decision layer.
+            "base_code": _base_code(r),
             # steal_of_second is the implicit baseline; third/home get their
             # own dummies since their success rates are wildly different
             # (2nd ~79%, 3rd ~82%, home ~42% -- see notebooks/eda.ipynb).
