@@ -77,8 +77,11 @@ python -m pytest tests/ -q
 
 See `notebooks/eda.ipynb` for the full validation trail: parser sanity
 checks, per-season leaderboards, the Statcast join, the feature table's
-leakage checks, and model diagnostics (confusion matrices, calibration,
-most-confident-wrong predictions).
+leakage checks, model diagnostics (confusion matrices, calibration,
+most-confident-wrong predictions), and the decision layer (section 13:
+the full RE24 table with sample sizes per cell, break-even rates across
+all 24 valid steal situations, and the real model's GO/HOLD calls on 25
+real held-out attempts).
 
 ## What's here
 
