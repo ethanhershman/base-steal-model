@@ -22,9 +22,20 @@ keyed on the moment every half-inning actually ended (regardless of how),
 so walk-off/sudden-death dynamics fall out for free instead of needing an
 error-prone "flip to the opponent's perspective" formula.
 
+Unlike src/features.py and src/run_expectancy.py, this defaults to
+2021-2025 (five seasons, not three): win probability by score/inning/outs/
+bases isn't affected by the 2023 steal-specific rule changes the way steal
+SUCCESS rates are, so there's no reason to throw away 2021-2022 here --
+more data matters a lot for the sparser late/close cells. 2021-2022 do
+share the automatic extra-innings runner rule (in effect since 2020) with
+2023-2025, so extra-inning dynamics stay consistent; going back further
+than 2021 would cross that boundary and mix in a different extra-innings
+rule, which isn't done here without deliberately checking for it first.
+
 Usage:
-    python -m src.win_probability --data-dirs data/retrosheet_2023 \
-        data/retrosheet_2024 data/retrosheet_2025
+    python -m src.win_probability --data-dirs data/retrosheet_2021 \
+        data/retrosheet_2022 data/retrosheet_2023 data/retrosheet_2024 \
+        data/retrosheet_2025
 """
 from __future__ import annotations
 
@@ -188,7 +199,8 @@ def is_high_leverage(inning: int, score_diff: int, leverage_innings: int = 7,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dirs", nargs="+",
-                    default=["data/retrosheet_2023", "data/retrosheet_2024",
+                    default=["data/retrosheet_2021", "data/retrosheet_2022",
+                             "data/retrosheet_2023", "data/retrosheet_2024",
                              "data/retrosheet_2025"])
     args = ap.parse_args()
 

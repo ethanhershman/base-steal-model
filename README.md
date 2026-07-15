@@ -88,7 +88,9 @@ the full RE24 table with sample sizes per cell, break-even rates across
 all 24 valid steal situations, and the real model's GO/HOLD calls on 25
 real held-out attempts; section 14: the win-probability upgrade for
 late/close games, with the exact reward/cost/break-even arithmetic shown
-step by step for the down-1-vs-tied bottom-of-the-9th comparison).
+step by step for the down-1-vs-tied bottom-of-the-9th comparison, a
+3-season-vs-5-season sensitivity check, and a direct test of whether the
+"current state" baseline is biased by teams' own steal decisions).
 
 ## What's here
 
@@ -283,7 +285,7 @@ batting team went on to win the whole game. `src/demo_decision.py` swaps to
 this table automatically for high-leverage situations (7th inning or later,
 score within 3 runs — `is_high_leverage()`).
 
-Two things worth knowing about how it's built:
+Three things worth knowing about how it's built:
 - **A caught stealing that makes the 3rd out isn't priced via RE24-style
   algebra** ("flip to the opponent's perspective"). Instead the table
   separately tracks every real historical moment a half-inning actually
@@ -296,17 +298,45 @@ Two things worth knowing about how it's built:
   that always preserves the exact inning/half (never blending a 9th-inning
   question with 3rd-inning data) before widening anything else. Extreme
   corners (e.g. a big lead late with runners on) are honestly sparse even
-  across 3 seasons and get flagged low-confidence rather than presented with
+  across 5 seasons and get flagged low-confidence rather than presented with
   false precision.
+- **Built from 2021-2025 (5 seasons), wider than RE24's 3.** Win probability
+  by score/inning/outs/bases isn't affected by the 2023 steal-specific rule
+  changes the way steal success rates are, so there's no reason to throw
+  away 2021-2022 here — and the sparser late/close cells benefit a lot from
+  the extra data (checked directly: see below). 2021-2022 do share the
+  automatic extra-innings runner rule with 2023-2025 (in effect since 2020),
+  so extra-inning dynamics stay consistent; going back further would cross
+  that rule boundary and isn't done without deliberately checking for it.
 
 **Concretely, down 1 with 2 outs in the bottom of the 9th** (runner on 1st,
-steal of 2nd): win-probability break-even is **45.6%** — dramatically lower
+steal of 2nd): win-probability break-even is **53.7%** — meaningfully lower
 than RE24's ~71-74% for the same base-out situation. Tied in that same spot
-is the opposite: break-even is **90.2%**, higher than the RE24 baseline,
-because a caught stealing there doesn't lose the game, it just sends it to
-extras, so there's more to protect. Down 2 sits in between (53.9%). None of
-this is hardcoded — it's what the data says once "value" means win
-probability instead of runs.
+is the opposite: break-even is **61.4%**, still above RE24's baseline
+because a caught stealing there doesn't lose the game (it just sends it to
+extras, so there's more to protect), even though the gap is smaller than it
+first looked. Down 2 sits in between (64.8%). None of this is hardcoded —
+it's what the data says once "value" means win probability instead of runs.
+
+**A genuinely humbling finding along the way**: the first version of this
+(3 seasons) gave 45.6% (down 1) and 90.2% (tied) — neither cell was ever
+flagged low-confidence (both cleared the `n>=20` threshold), but adding
+2021-2022 moved both numbers by double digits. `n>=20` was enough to avoid
+nonsensical results, not enough for a *stable* one. The qualitative story
+(trailing lowers the bar below RE24's baseline, tied raises it above) held
+across both sample sizes — that's the part to trust; the exact decimal
+needed more data to land where it should. See `notebooks/eda.ipynb`,
+section 14.5, for the side-by-side comparison.
+
+**Also checked directly**: does the "current state" win probability
+(e.g. 7.4% for the down-1 case) implicitly assume no steal was attempted?
+No — it's an average across every real historical instance of that exact
+situation, including the ~11% of the time a steal actually was attempted.
+Checked whether that biases the reward/cost math: the subset that DID
+attempt a steal from that exact spot won at least as often as the subset
+that didn't (10.0% vs. 7.2%, small sample on the "attempted" side) — real
+managers' in-the-moment judgment here isn't contradicted by what the
+break-even math says. See `notebooks/eda.ipynb`, section 14.6.
 
 `src/demo_decision.py` fits the real model (not hardcoded example
 probabilities) on the same train split `src/train.py` uses, then walks real

@@ -30,7 +30,19 @@ def main():
     ap.add_argument("--features", default="data/sample/features_2023_2025.csv")
     ap.add_argument("--data-dirs", nargs="+",
                     default=["data/retrosheet_2023", "data/retrosheet_2024",
-                             "data/retrosheet_2025"])
+                             "data/retrosheet_2025"],
+                    help="seasons for RE24 -- kept post-rule-change only, "
+                         "since the run-scoring environment plausibly "
+                         "shifted with the 2023 rules too")
+    ap.add_argument("--wp-data-dirs", nargs="+",
+                    default=["data/retrosheet_2021", "data/retrosheet_2022",
+                             "data/retrosheet_2023", "data/retrosheet_2024",
+                             "data/retrosheet_2025"],
+                    help="seasons for the win-probability table -- wider "
+                         "than RE24's, since win prob by score/inning/outs/"
+                         "bases isn't affected by the steal-specific rule "
+                         "changes and benefits a lot from more data in the "
+                         "sparser late/close cells")
     ap.add_argument("--model", choices=["logistic", "xgboost"], default="xgboost")
     ap.add_argument("--test-frac", type=float, default=0.2)
     ap.add_argument("-n", type=int, default=12, help="how many test-set attempts to show")
@@ -56,9 +68,10 @@ def main():
     model = fit_logistic(X_tr, y_tr) if args.model == "logistic" else fit_xgboost(X_tr, y_tr)
     test["p_model"] = model.predict_proba(X_te)[:, 1]
 
-    print(f"Building RE24 + win-probability tables from {', '.join(args.data_dirs)}...")
+    print(f"Building RE24 from {', '.join(args.data_dirs)}...")
     re24 = build_re24(args.data_dirs)
-    wp_table = build_win_prob(args.data_dirs)
+    print(f"Building win-probability table from {', '.join(args.wp_data_dirs)}...")
+    wp_table = build_win_prob(args.wp_data_dirs)
 
     print(f"\nSteal-decision demo -- real model, real held-out attempts "
           f"({test['date'].min()} to {test['date'].max()})\n")
