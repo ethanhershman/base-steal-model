@@ -58,18 +58,22 @@ from .win_probability import (
 from .train import NUMERIC, fit_logistic, fit_xgboost
 
 
-def load_tables() -> dict:
+def load_tables(base_dir="data") -> dict:
     """Build every table predict_steal_decision needs, once. Season ranges
     match src/demo_decision.py exactly -- see win_probability.py's module
     docstring for why the after-success/after-caught table and the
     hold-only baseline deliberately use different, non-interchangeable
     season ranges.
+
+    base_dir: where the retrosheet_YYYY/ directories live -- override to
+    "../data" when calling this from notebooks/ (cwd is the notebook's own
+    directory there, same convention notebooks/eda.ipynb uses).
     """
-    re24 = build_re24(_season_dirs(POST_RULE_CHANGE_SEASONS))
-    wp_table = build_win_prob(_season_dirs(POST_RULE_CHANGE_SEASONS))
+    re24 = build_re24(_season_dirs(POST_RULE_CHANGE_SEASONS, base=base_dir))
+    wp_table = build_win_prob(_season_dirs(POST_RULE_CHANGE_SEASONS, base=base_dir))
     wp_hold_table = build_win_prob(
-        _season_dirs(LEGACY_SEASONS) + _season_dirs(MODERN_SEASONS),
-        hold_only=True, legacy_dirs=_season_dirs(LEGACY_SEASONS),
+        _season_dirs(LEGACY_SEASONS, base=base_dir) + _season_dirs(MODERN_SEASONS, base=base_dir),
+        hold_only=True, legacy_dirs=_season_dirs(LEGACY_SEASONS, base=base_dir),
     )
     return {"re24": re24, "wp_table": wp_table, "wp_hold_table": wp_hold_table}
 
