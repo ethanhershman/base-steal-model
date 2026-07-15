@@ -36,19 +36,17 @@ from __future__ import annotations
 
 import argparse
 
-from .win_probability import LEGACY_SEASONS, MODERN_SEASONS, _season_dirs
+from .win_probability import LEGACY_SEASONS, MODERN_SEASONS, POST_RULE_CHANGE_SEASONS, _season_dirs
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--features", default="data/sample/features_2023_2025.csv")
-    ap.add_argument("--data-dirs", nargs="+",
-                    default=["data/retrosheet_2023", "data/retrosheet_2024",
-                             "data/retrosheet_2025"],
+    ap.add_argument("--data-dirs", nargs="+", default=_season_dirs(POST_RULE_CHANGE_SEASONS),
                     help="seasons for RE24 -- kept post-rule-change only, "
                          "since the run-scoring environment plausibly "
                          "shifted with the 2023 rules too")
-    ap.add_argument("--wp-data-dirs", nargs="+", default=_season_dirs(MODERN_SEASONS),
+    ap.add_argument("--wp-data-dirs", nargs="+", default=_season_dirs(POST_RULE_CHANGE_SEASONS),
                     help="seasons for the win-probability after-success/"
                          "after-caught table -- kept post-rule-change only, "
                          "like RE24 (checked directly: these values differ "

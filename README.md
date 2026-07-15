@@ -323,18 +323,19 @@ Four things worth knowing about how it's built:
   season range.
 
 **Concretely, down 1 with 2 outs in the bottom of the 9th** (runner on 1st,
-steal of 2nd): win-probability break-even is **51.4%** — meaningfully lower
-than RE24's ~71-74% for the same base-out situation. Tied in that same spot
-is different in an interesting way: break-even is **75.3%**, landing above
-RE24's own baseline instead of falling, because a caught stealing there
-doesn't lose the game (it just sends it to extras) — protecting a shot at a
-walk-off is worth more than the modest reward of advancing a base. None of
-this is hardcoded — it's what the data says once "value" means win
-probability instead of runs.
+steal of 2nd): win-probability break-even is **46.5%** — well below RE24's
+~71-74% for the same base-out situation, since you have much less to
+protect when you're already unlikely to win. Tied in that same spot is
+still below RE24's baseline (**64.8%**), just by a smaller margin — a
+caught stealing there doesn't lose the game (it just sends it to extras),
+so the bar drops, but not nearly as much as when you're trailing outright.
+Leading (up 1 or more) flips the picture entirely: break-even hits 100% —
+protect the lead, don't risk it. None of this is hardcoded — it's what the
+data says once "value" means win probability instead of runs.
 
-**Three real corrections happened getting here, each surfaced by a direct
+**Four real corrections happened getting here, each surfaced by a direct
 question rather than assumed away** (see `notebooks/eda.ipynb`, sections
-14.5-14.7 for the full before/after comparisons):
+14.5-14.8 for the full before/after comparisons):
 1. *Sample size.* The first version (3 seasons, unconditional baseline) gave
    45.6% (down 1) / 90.2% (tied). Neither cell was ever flagged
    low-confidence (both cleared `n>=20`), but adding 2021-2022 moved both by
@@ -355,15 +356,31 @@ question rather than assumed away** (see `notebooks/eda.ipynb`, sections
    to extend. But the after-success value is NOT era-consistent (11.2% vs.
    13.9% for the same state) — because once a runner reaches 2nd, whether
    *they* subsequently advance further is itself shaped by the bigger-base
-   rule, a channel `hold_only` doesn't reach. So `hold_table` extends to
-   2013-2025; `table` stays on 2021-2025, like RE24.
+   rule (more generally: taking extra bases on ANY play, not just literal
+   steals, got easier in 2023 — confirmed by checking two completely
+   steal-unrelated states, which showed only noise-level era gaps by
+   comparison), a channel `hold_only` doesn't reach.
+4. *A real bug this uncovered.* Asked directly whether "one era was ruining
+   the actual probability" — checking that question caught a genuine bug:
+   `table`'s default season range was `MODERN_SEASONS` (2021-2025), reused
+   from the hold-only baseline's range, which **still includes the two
+   pre-rule-change seasons** step 3 had just proven that table is sensitive
+   to. Fixed by adding a third, distinct constant —
+   `POST_RULE_CHANGE_SEASONS` (2023-2025) — and using it explicitly for
+   `table`'s default, rather than reusing a "modern" constant that was
+   designed around a *different* rule boundary (2020's automatic
+   extra-innings runner, not 2023's bigger bases). This changed the
+   after-success value for the down-1 case from 13.9% to the correct 15.3%,
+   and moved the final break-even numbers from 51.4%/75.3% to 46.5%/64.8%.
 
 The qualitative story (trailing lowers the bar well below RE24's baseline,
-tied raises it above) held across every version — that's the part to trust
-throughout; the exact decimals needed all three fixes to settle where they
-should, and blindly pooling more history without checking era-consistency
-first (step 3) would have reintroduced the exact confound the hold-only fix
-was meant to remove.
+tied lowers it too but by much less, leading raises it to "never risk it")
+held up across every version — that's the part to trust throughout. But the
+exact decimals needed all four fixes to settle where they should, and step
+4 in particular is a reminder that "we checked X is safe" doesn't
+automatically mean every piece of code that touches related data actually
+uses that checked-safe range — worth an explicit regression test
+(`tests/test_win_probability.py`) rather than trusting it stays fixed.
 
 `src/demo_decision.py` fits the real model (not hardcoded example
 probabilities) on the same train split `src/train.py` uses, then walks real

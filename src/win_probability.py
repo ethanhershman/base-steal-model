@@ -72,12 +72,28 @@ MIN_CELL_N = 20        # below this, fall back to a coarser lookup
 SCORE_CLIP = 4          # score margins beyond +-4 are clipped together
 MAX_INNING = 9          # 9th and later all bucket together ("9+")
 
-# Default season range for the win-probability table: pre-2020 seasons
-# (LEGACY) have extra innings excluded (see build_win_prob's legacy_dirs)
-# since they predate the automatic extra-innings runner rule; 2021-2025
-# (MODERN) are used without restriction.
+# Three season groups, for two DIFFERENT rule boundaries -- conflating them
+# was a real bug caught after the fact (see section 14.7 in the notebook and
+# the "one era ruining it" investigation in conversation): the 2020 boundary
+# (automatic extra-innings runner) and the 2023 boundary (bigger bases /
+# pickoff limits) are not the same line, and MODERN_SEASONS previously got
+# used as a stand-in for "post-rule-change" when it isn't one -- it still
+# includes 2021-2022, which predate the bigger-base rule.
+#
+#   * LEGACY_SEASONS (pre-2020): extra innings excluded when used (see
+#     build_win_prob's legacy_dirs), since they predate the automatic
+#     extra-innings runner.
+#   * MODERN_SEASONS (2021+): shares the extra-innings rule with today, but
+#     STILL SPANS the 2023 steal-rule boundary. Only appropriate for
+#     quantities checked to be insensitive to that boundary (the hold-only
+#     baseline -- see build_win_prob's hold_only docs).
+#   * POST_RULE_CHANGE_SEASONS (2023+): matches src/features.py and
+#     src/run_expectancy.py's scope exactly. Required for anything NOT
+#     checked to be rule-boundary-insensitive -- in particular the
+#     after-success/after-caught table, which is NOT (see section 14.7).
 LEGACY_SEASONS = [2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020]
 MODERN_SEASONS = [2021, 2022, 2023, 2024, 2025]
+POST_RULE_CHANGE_SEASONS = [2023, 2024, 2025]
 
 
 def _season_dirs(seasons, base="data"):
@@ -272,7 +288,7 @@ def is_high_leverage(inning: int, score_diff: int, leverage_innings: int = 7,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dirs", nargs="+", default=_season_dirs(MODERN_SEASONS),
+    ap.add_argument("--data-dirs", nargs="+", default=_season_dirs(POST_RULE_CHANGE_SEASONS),
                     help="seasons for the after-success/after-caught table -- "
                          "kept post-rule-change only (like RE24): checked "
                          "directly and these values genuinely differ across "
@@ -309,7 +325,7 @@ def main():
     # RE24 stays on the post-rule-change seasons only, unlike the win-prob
     # table above -- the run-scoring environment plausibly shifted with the
     # 2023 rules, so it doesn't get the "more history is safe" treatment.
-    re24 = build_re24(_season_dirs(MODERN_SEASONS[2:]))  # 2023-2025
+    re24 = build_re24(_season_dirs(POST_RULE_CHANGE_SEASONS))
     be, reward, cost = break_even_rate(re24, "1__", 2, "2")
     print(f"  RE24 break-even (any score, any early inning) = {be:.1%}")
 
