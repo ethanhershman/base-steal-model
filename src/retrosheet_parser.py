@@ -35,7 +35,8 @@ from dataclasses import dataclass, field, asdict
 # Roster handling (for batter/runner handedness)
 # ---------------------------------------------------------------------------
 def load_rosters(data_dir: str) -> dict:
-    """Map player_id -> {'bats': L/R/B, 'throws': L/R} from .ROS files.
+    """Map player_id -> {'bats': L/R/B, 'throws': L/R, 'first', 'last', 'team'}
+    from .ROS files.
 
     Roster line format: id,last,first,bats,throws,team,pos
     """
@@ -43,8 +44,9 @@ def load_rosters(data_dir: str) -> dict:
     for path in glob.glob(os.path.join(data_dir, "*.ROS")):
         with open(path, newline="") as fh:
             for row in csv.reader(fh):
-                if len(row) >= 5 and row[0]:
-                    players[row[0]] = {"bats": row[3], "throws": row[4]}
+                if len(row) >= 6 and row[0]:
+                    players[row[0]] = {"bats": row[3], "throws": row[4],
+                                       "last": row[1], "first": row[2], "team": row[5]}
     return players
 
 
