@@ -128,6 +128,9 @@ baseline to 2013-2025).
 | `tests/` | Regression tests (leaderboard, success rate, RE24 anchors, win-probability sanity checks, `predict.py`'s unified interface). |
 | `data/retrosheet_2023/` | Bundled raw 2023 event + roster files. |
 | `data/sample/` | Generated sample outputs (steal tables + combined feature table). |
+| `src/export_web_data.py` | Builds `backend/data/app.db` (SQLite) — RE24, win-probability, and logistic-model artifacts plus a player-name search index — for the Go web app. See "Web app" below. |
+| `backend/` | Go (chi + sqlc) API: the decision layer ported to Go, no Python at request time. See `backend/README.md`. |
+| `frontend/` | React + shadcn/ui web UI for `backend/`'s API. See `frontend/README.md`. |
 
 ## Data sources
 
@@ -519,6 +522,37 @@ side:**
   win-probability path (which degrades gracefully on its own — see
   "Win probability for late/close games" above) and flags the result as
   `"WP (RE24 had no data)"` so the caller can see that happened.
+
+## Web app
+
+`backend/` (Go: chi + sqlc + SQLite) and `frontend/` (React + shadcn/ui)
+are a real "type in a situation, get a recommendation" web app built on
+top of `src/predict.py` -- ROADMAP.md's Phase 5. The decision layer
+(RE24, win probability, the logistic-regression model) is ported to Go
+so predictions run with no Python process at request time; Python is an
+offline export step that freezes the trained artifacts into
+`backend/data/app.db`, which is committed (like `data/retrosheet_2023/`
+and `data/sample/*.csv`) so the app runs out of the box without
+re-running the pipeline first.
+
+Quick start (from the repo root):
+
+```bash
+# 1. (Optional -- backend/data/app.db is already committed) Regenerate
+#    the SQLite artifact from the current model/data:
+python -m src.export_web_data
+
+# 2. Backend -- serves /api/players/search and /api/predict on :8080
+cd backend && go run ./cmd/server
+
+# 3. Frontend -- in a second terminal, proxies /api/* to the backend
+cd frontend && npm install && npm run dev
+```
+
+Open the URL Vite prints (usually `http://localhost:5173`). See
+`backend/README.md` and `frontend/README.md` for env vars, port
+overrides (both ports are dev defaults, not fixed requirements), API
+details, and project layout.
 
 ## Known limitations
 
