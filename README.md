@@ -18,8 +18,8 @@ that combines the trained model's predicted probability with a situational
 break-even rate to make a GO/HOLD call — RE24 for most of the game, win
 probability for high-leverage late/close situations, where RE24's
 run-based math badly understates the cost of a caught stealing that ends a
-trailing team's last chance. Backtesting the full system against history
-(see `ROADMAP.md`, "Step 5") is the natural next step.
+trailing team's last chance. `src/backtest.py` (`ROADMAP.md`, "Step 5") backtests
+the full system against history — see "Backtest" below.
 
 **`src/predict.py` is the integration point for anything built on top of
 this** (e.g. a website) — see "For website/app integration" below.
@@ -122,6 +122,7 @@ baseline to 2013-2025).
 | `src/win_probability.py` | Empirical win-probability table (inning/half/outs/bases/score margin) and break-even math for high-leverage late/close situations. Two season ranges: 2013-2025 for the hold-only baseline (checked era-consistent), 2021-2025 for after-success/after-caught (checked NOT era-consistent). |
 | `src/demo_decision.py` | Fits the real trained model, then makes GO/HOLD calls on real held-out attempts by comparing its predicted probability against the RE24 (or win-probability, if high-leverage) break-even for that exact situation. |
 | `src/predict.py` | **The integration point for a website/app.** `predict_steal_decision(...)` — one function call, one row of output (current win probability, win probability if the steal succeeds, break-even, model's predicted success probability, GO/HOLD). See "For website/app integration" below. |
+| `src/backtest.py` | Full backtest (ROADMAP.md, "Step 5") — runs every held-out test-set attempt (not a sample) through the decision layer and totals the model's GO-only policy's realized run/win value against what actually happened. See "Backtest" below. |
 | `notebooks/eda.ipynb` | Exploratory checks + validation for the data/features/model (sections 1-12) and the decision layer (sections 13-14.8). |
 | `notebooks/predict_demo.ipynb` | Runnable walkthrough of `src/predict.py`'s API — start here to see it in action before wiring it into a backend. |
 | `tests/` | Regression tests (leaderboard, success rate, RE24 anchors, win-probability sanity checks, `predict.py`'s unified interface). |
@@ -400,10 +401,52 @@ each one's predicted probability against its own situational break-even
 (RE24 or win probability, whichever applies) for a GO/HOLD call, and shows
 what actually happened next to it. This is illustrative, not a backtest:
 every row shown is an attempt that happened, so we can see whether GO calls
-would have paid off, but not what a HOLD call would have avoided. A real
-backtest (run the full held-out set, compare aggregate run/win value of the
-model's recommendations against what actually happened) is the natural next
-step — see ROADMAP.md, "Step 5."
+would have paid off, but not what a HOLD call would have avoided.
+
+## Backtest
+
+`src/backtest.py` is the real backtest (ROADMAP.md, "Step 5"): every row of
+the **full** held-out test set (not a hand-picked sample) gets a GO/HOLD
+call, and the model's GO-only policy's realized value (HOLD scored as 0 —
+the break-even framework's own zero point) is totaled up against what
+actually happened, separately for RE24 (runs) and win-probability
+(high-leverage) situations, since the two aren't the same currency.
+
+```bash
+python -m src.backtest --out data/sample/backtest_2025.csv
+```
+
+Result, XGBoost, 2,714 held-out attempts (2025/06/01-2025/11/01):
+
+| layer | attempts | GO success rate | HOLD success rate | actual policy | model policy |
+|---|---|---|---|---|---|
+| RE24 (runs) | 2,039 | 81.1% | 69.5% | +0.0076/attempt | **+0.0309/attempt** |
+| Win probability (late/close) | 675 | 82.2% | 80.7% | +0.0069/attempt | **+0.0211/attempt** |
+
+The model's calls would have added real value over the real historical
+policy in both regimes, mainly by avoiding the lowest-probability attempts
+(of the 819 RE24 situations it would have held, 250 were actually caught
+vs. 569 missed opportunities).
+
+**Running every row instead of a sample surfaced a real bug**: double/triple
+steals (the target base already occupied by another runner breaking on the
+same pitch — e.g. runner on 1st+2nd, trailing runner steals 2nd while the
+lead runner simultaneously steals 3rd) were producing nonsensical
+break-evens (above 100%, negative rewards on successful steals), because
+`run_expectancy._state_after_success` only tracked one runner's movement and
+silently overwrote the other. Fixed with a cascade (`_cascade_free`): a
+runner arriving at an occupied base pushes the existing occupant forward one
+base first (recursively, if that base is occupied too), scoring a run if
+someone gets pushed off 3rd. `win_probability.py` and `predict.py` both
+consume the same fixed function, so the fix applies everywhere a double
+steal's post-state matters, not just the backtest.
+
+What this can and can't show: every row is an attempt that really happened,
+so the GO-call success rate and the caught-stealings avoided by HOLD calls
+are real, checkable outcomes. It can't show the reverse case — situations
+where no one attempted a steal at all, so whether the model would have
+(correctly or not) sent a runner who in reality held stays unobservable
+from this data.
 
 ## For website/app integration
 

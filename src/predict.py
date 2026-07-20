@@ -172,8 +172,8 @@ def predict_steal_decision(
 
     # Always compute win probability for display, regardless of which layer
     # ends up making the decision -- see module docstring.
-    succ_base = _state_after_success(base_code, target)
-    succ_score = score_diff + (1 if target == "H" else 0)
+    succ_base, run_bonus = _state_after_success(base_code, target)
+    succ_score = score_diff + run_bonus
     wp_current, n_cur, src_cur = win_prob_lookup(wp_hold_table, inning, half, outs, base_code, score_diff)
     wp_if_success, n_succ, src_succ = win_prob_lookup(wp_table, inning, half, outs, succ_base, succ_score)
 

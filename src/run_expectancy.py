@@ -58,16 +58,41 @@ def build_re24(data_dirs) -> dict:
     return {k: totals[k] / counts[k] for k in totals if counts[k] > 0}
 
 
-def _state_after_success(base_code: str, target: str) -> str:
-    """New base code after a successful steal to `target` (2, 3, or H)."""
+def _cascade_free(b: dict, base: int) -> bool:
+    """Free up `base` for an incoming runner. If it's already occupied --
+    only possible on a double/triple steal, where more than one runner
+    breaks on the same pitch -- push that runner forward one base first
+    (cascading further if THAT base is also occupied). Returns True if a
+    run scored because a runner got pushed off 3rd.
+
+    Two runners can never really occupy the same base, so if `target`'s
+    destination is occupied at all, the only baseball-legal explanation is
+    that its occupant is simultaneously advancing on this same play too.
+    """
+    if base > 3 or not b.get(base):
+        return False
+    pushed_further_scored = _cascade_free(b, base + 1)
+    if base + 1 <= 3:
+        b[base + 1] = True
+        b[base] = False
+        return pushed_further_scored
+    b[base] = False
+    return True  # this runner was pushed off 3rd and scored
+
+
+def _state_after_success(base_code: str, target: str) -> tuple[str, int]:
+    """New base code after a successful steal to `target` (2, 3, or H), and
+    how many runs scored as a side effect (the batting team's own steal-of-
+    home run, plus any runner a double/triple steal cascade pushed off 3rd --
+    see _cascade_free)."""
     b = {1: base_code[0] != "_", 2: base_code[1] != "_", 3: base_code[2] != "_"}
-    if target == "2":
-        b[1], b[2] = False, True
-    elif target == "3":
-        b[2], b[3] = False, True
-    elif target == "H":
-        b[3] = False
-    return "".join(s if b[i] else "_" for i, s in ((1, "1"), (2, "2"), (3, "3")))
+    frm, to = {"2": (1, 2), "3": (2, 3), "H": (3, 4)}[target]
+    cascade_scored = _cascade_free(b, to) if to <= 3 else False
+    if to <= 3:
+        b[to] = True
+    b[frm] = False
+    runs = (1 if target == "H" else 0) + (1 if cascade_scored else 0)
+    return "".join(s if b[i] else "_" for i, s in ((1, "1"), (2, "2"), (3, "3"))), runs
 
 
 def _state_after_caught(base_code: str, target: str) -> str:
@@ -85,8 +110,7 @@ def break_even_rate(re24: dict, base_code: str, outs: int, target: str):
     changes. A successful steal of home also banks +1 run immediately.
     """
     cur = re24[(base_code, outs)]
-    succ_state = _state_after_success(base_code, target)
-    run_bonus = 1.0 if target == "H" else 0.0
+    succ_state, run_bonus = _state_after_success(base_code, target)
     re_succ = run_bonus + (re24.get((succ_state, outs), 0.0)
                            if outs <= 2 else 0.0)
     if outs >= 2:  # a caught stealing for the 3rd out ends the inning (RE=0)

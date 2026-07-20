@@ -25,6 +25,14 @@ runs, win-probability rows in win probability -- different currencies for
 different situations (early/low-leverage vs. late/close), so the two are
 reported separately, never summed together.
 
+Running EVERY row (not a hand-picked sample) surfaced a real bug the first
+time this was written: double/triple steals, where the target base is
+already occupied by another runner breaking on the same pitch, produced
+nonsensical rewards/costs (break-even above 100%, negative rewards on
+successful steals) because run_expectancy._state_after_success only
+tracked one runner's movement. Fixed at the source (see that function's
+_cascade_free helper) rather than worked around here.
+
 Honest limits on what this can and can't show (same ones demo_decision.py
 already calls out): every row here is an attempt that happened, so we can
 directly check whether the model's GO calls would have paid off and
@@ -49,29 +57,6 @@ from .train import NUMERIC, fit_logistic, fit_xgboost
 
 CURRENCY = {"RE24": "runs"}  # anything not "RE24" is win-probability-denominated
 
-_TARGET_IDX = {"2": 1, "3": 2, "H": None}
-
-
-def _target_base_occupied(base_code: str, target: str) -> bool:
-    """True for double-steal rows where the runner this row describes is
-    stealing into a base another runner already occupies (e.g. base_code
-    "12_", target "2" -- the trailing runner advancing to 2nd while the
-    lead runner simultaneously advances to 3rd on the same pitch).
-
-    run_expectancy._state_after_success/_state_after_caught only track ONE
-    runner's movement, so on these rows they silently drop the OTHER
-    runner's simultaneous advance and produce a nonsensical post-state
-    (this surfaced as negative costs / break-even rates above 1.0 the first
-    time the backtest ran every row instead of a hand-picked sample -- see
-    decide()). Not a bug this module can safely fix by itself: teaching
-    RE24/win-probability to model paired advances is a real change to
-    run_expectancy.py's/win_probability.py's state functions, used
-    elsewhere. Excluded here instead, and reported as excluded rather than
-    silently folded into the totals.
-    """
-    idx = _TARGET_IDX[target]
-    return idx is not None and base_code[idx] != "_"
-
 
 def decide(re24, wp_table, wp_hold_table, *, inning, half, outs, base_code,
           score_diff, target, p_model):
@@ -80,13 +65,10 @@ def decide(re24, wp_table, wp_hold_table, *, inning, half, outs, base_code,
     RE24-first-else-win-probability logic (see predict.predict_steal_decision
     for why: high-leverage late/close games swap to win probability, and any
     (base_code, outs) RE24 has no data for falls through to win probability
-    too rather than raising).
+    too rather than raising). Double/triple steals (the target base already
+    occupied by another runner breaking on the same pitch) are handled by
+    run_expectancy._state_after_success's cascade, not specially here.
     """
-    if _target_base_occupied(base_code, target):
-        return {"layer": "EXCLUDED (double steal into an occupied base)",
-                "break_even": None, "reward": None, "cost": None,
-                "decision": None, "min_n": None}
-
     high_leverage = is_high_leverage(inning, score_diff)
     min_n = None
     if not high_leverage and (base_code, outs) in re24:
@@ -122,10 +104,7 @@ def run_backtest(test_df, model, re24, wp_table, wp_hold_table):
                   inning=int(row["inning"]), half=int(row["half"]), outs=int(row["outs"]),
                   base_code=row["base_code"], score_diff=int(row["score_diff"]),
                   target=row["target_base"], p_model=float(p_model))
-        if d["reward"] is None:
-            actual_value = None
-        else:
-            actual_value = d["reward"] if row["success"] == 1 else -d["cost"]
+        actual_value = d["reward"] if row["success"] == 1 else -d["cost"]
         records.append({
             "date": row["date"], "inning": row["inning"], "half": row["half"],
             "outs": row["outs"], "base_code": row["base_code"],
@@ -148,21 +127,9 @@ def summarize(results) -> None:
     print("\nattempts by layer:")
     print(results["layer"].value_counts().to_string())
 
-    excluded = results["layer"].str.startswith("EXCLUDED")
-    if excluded.any():
-        print(f"\n{excluded.sum()}/{len(results)} rows excluded from the value "
-             "totals below -- double steals where this row's runner advances "
-             "into a base another runner simultaneously occupies (e.g. runner "
-             "on 1st+2nd, trailing runner steals 2nd while the lead runner "
-             "steals 3rd on the same pitch). See _target_base_occupied's "
-             "docstring: the RE24/win-probability state functions only track "
-             "one runner's movement, so these rows can't be scored correctly "
-             "without a real change to that shared code, not a workaround here.")
-
     groups = [
         ("RE24 (early/low-leverage game states)", results["layer"] == "RE24", "runs"),
-        ("Win probability (high-leverage, or RE24 had no data)",
-         (results["layer"] != "RE24") & ~excluded, "win-prob"),
+        ("Win probability (high-leverage, or RE24 had no data)", results["layer"] != "RE24", "win-prob"),
     ]
     for name, mask, unit in groups:
         g = results[mask]

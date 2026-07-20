@@ -69,19 +69,23 @@ def test_run_backtest_covers_every_row_with_valid_fields():
     results = run_backtest(ctx["test"], ctx["model"], ctx["re24"],
                            ctx["wp_table"], ctx["wp_hold_table"])
     assert len(results) == len(ctx["test"])
-    scored = results[~results["layer"].str.startswith("EXCLUDED")]
-    assert set(scored["decision"]) <= {"GO", "HOLD"}
-    assert set(scored["layer"]) <= {"RE24", "WP", "WP (RE24 had no data)"}
-    assert scored["break_even"].between(0.0, 1.0).all()
+    assert set(results["decision"]) <= {"GO", "HOLD"}
+    assert set(results["layer"]) <= {"RE24", "WP", "WP (RE24 had no data)"}
+    assert results["break_even"].between(0.0, 1.0).all()
 
 
-def test_double_steal_into_occupied_base_is_excluded_not_miscomputed():
+def test_double_steal_into_occupied_base_gets_a_sane_break_even():
+    # base_code "12_", target "2": the trailing runner steals 2nd while the
+    # runner already on 2nd simultaneously advances to 3rd (a double steal).
+    # run_expectancy._state_after_success's cascade handles this instead of
+    # silently overwriting the other runner -- see its docstring.
     ctx = _get_context()
     d = decide(ctx["re24"], ctx["wp_table"], ctx["wp_hold_table"],
               inning=3, half=0, outs=1, base_code="12_", score_diff=0,
               target="2", p_model=0.8)
-    assert d["layer"].startswith("EXCLUDED")
-    assert d["decision"] is None
+    assert d["layer"] == "RE24"
+    assert 0.0 <= d["break_even"] <= 1.0
+    assert d["reward"] > 0 and d["cost"] > 0
 
 
 def test_actual_value_matches_reward_or_cost_by_outcome():
@@ -93,9 +97,7 @@ def test_actual_value_matches_reward_or_cost_by_outcome():
     # attempts realize a positive reward, caught ones the negative of the
     # cost. The WP layer's win_prob_break_even documents its own exception
     # to this (module docstring: "small-sample cells can disagree by noise
-    # alone"), so this check is RE24-only -- see
-    # test_double_steal_into_occupied_base_is_excluded_not_miscomputed and
-    # this file's WP-specific tests for the other layer.
+    # alone"), so this check is RE24-only.
     re24_rows = results[results["layer"] == "RE24"]
     safe = re24_rows[re24_rows["success"] == 1]
     caught = re24_rows[re24_rows["success"] == 0]

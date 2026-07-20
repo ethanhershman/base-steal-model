@@ -252,8 +252,8 @@ def win_prob_break_even(table: dict, hold_table: dict, inning: int, half: int,
     """
     cur, n_cur, src_cur = win_prob_lookup(hold_table, inning, half, outs, base_code, score_diff, min_n)
 
-    succ_base = _state_after_success(base_code, target)
-    succ_score = score_diff + (1 if target == "H" else 0)
+    succ_base, run_bonus = _state_after_success(base_code, target)
+    succ_score = score_diff + run_bonus
     wp_succ, n_succ, src_succ = win_prob_lookup(table, inning, half, outs, succ_base, succ_score, min_n)
 
     if outs >= 2:
