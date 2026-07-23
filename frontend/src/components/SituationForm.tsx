@@ -1,6 +1,7 @@
 import { BASE_STATES, VALID_TARGETS } from "@/lib/types"
 import type { BaseCode, Situation, Target } from "@/lib/types"
 
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -158,10 +159,11 @@ export function SituationForm({ value, onChange }: SituationFormProps) {
       </div>
 
       <label className="col-span-2 flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
+        <Checkbox
           checked={value.is_double_steal}
-          onChange={(e) => onChange({ is_double_steal: e.target.checked })}
+          onCheckedChange={(checked: boolean | "indeterminate") =>
+            onChange({ is_double_steal: checked === true })
+          }
         />
         Double/triple steal (another runner breaking simultaneously)
       </label>
