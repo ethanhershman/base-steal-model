@@ -15,5 +15,5 @@ jobs:
         run: |
           echo "Pinging base-steal-backend..."
           curl -sf -o /dev/null -w "HTTP %{http_code}\n" \
-            https://base-steal-backend.onrender.com/ \
+            https://base-steal-backend.onrender.com/api/health \
             || (echo "Ping failed" && exit 1)
