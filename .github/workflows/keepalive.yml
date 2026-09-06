@@ -1,0 +1,19 @@
+name: Keep Render Backend Alive
+
+on:
+  schedule:
+    # Runs every 10 minutes. Adjust to match your Render free-tier
+    # sleep timeout (usually 15 min of inactivity).
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}  # lets you trigger it manually from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend
+        run: |
+          echo "Pinging base-steal-backend..."
+          curl -sf -o /dev/null -w "HTTP %{http_code}\n" \
+            https://base-steal-backend.onrender.com/ \
+            || (echo "Ping failed" && exit 1)
